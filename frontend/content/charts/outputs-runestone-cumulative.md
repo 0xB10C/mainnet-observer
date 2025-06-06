@@ -1,5 +1,5 @@
 ---
-title: "Cumulative Runstones (OP_RETURN)"
+title: "Cumulative Runestones (OP_RETURN)"
 draft: false
 author: "0xb10c"
 categories: Outputs
