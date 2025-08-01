@@ -121,12 +121,19 @@ pub struct Args {
     /// Flag to disable stat generation
     #[arg(long, default_value_t = false)]
     pub no_stats: bool,
+
+    /// Number of threads to use for parallel block fetching.
+    /// As of v29.0, Bitcoin Core starts 16 threads for handling HTTP requests.
+    /// By default, we use 14 of these and leave 2 threads to service other requests.
+    #[arg(long, default_value_t = 14)]
+    pub num_threads: usize,
 }
 
 pub fn collect_statistics(
     rest_host: &str,
     rest_port: u16,
     connection: Arc<Mutex<SqliteConnection>>,
+    num_threads: usize,
 ) -> Result<(), MainError> {
     let connection = Arc::clone(&connection);
     let db_height: i64 = {
@@ -160,10 +167,7 @@ pub fn collect_statistics(
     // to the `calc-stats` task
     let get_blocks_task = thread::spawn(move || -> Result<(), MainError> {
         let pool = rayon::ThreadPoolBuilder::new()
-            // Spawn only 14 fetch threads for now, as the default workqueuedepth is 16 for Bitcoin
-            // Core. Doing more requests than workqueuedepth could lead to problems. This leaves
-            // two paralell requests from elsewhere.
-            .num_threads(14)
+            .num_threads(num_threads)
             .build()
             .unwrap();
         let mut heights: Vec<i64> = (std::cmp::max(db_height + 1, 0)

@@ -85,7 +85,12 @@ fn test_integration_minimal() {
     setup_chain(&node, BLOCKS_TO_MINE as usize);
 
     let (rest_host, rest_port) = rest_host_and_port(&node);
-    if let Err(e) = collect_statistics(&rest_host, rest_port, Arc::clone(&conn)) {
+    if let Err(e) = collect_statistics(
+        &rest_host,
+        rest_port,
+        Arc::clone(&conn),
+        10, // Bitcoin Core v29 has 16, in the test use just use 10 of them.
+    ) {
         panic!("Failed to collect statistics: {:?}", e);
     }
 
