@@ -7,6 +7,8 @@ use rawtx_rs::{
     input::InputType, output::OpReturnFlavor, output::OutputType, script::DEREncoding,
     script::SignatureType, tx::TxInfo,
 };
+use statrs::statistics::Data;
+use statrs::statistics::OrderStatistics;
 use std::{collections::HashSet, error, fmt, num::ParseIntError};
 
 use crate::rest::{Block, InputData, ScriptPubkeyType};
@@ -74,7 +76,7 @@ pub struct Stats {
     pub tx: TxStats,
     pub input: InputStats,
     pub output: OutputStats,
-    //feerate: FeerateStats,
+    pub feerate: FeerateStats,
     pub script: ScriptStats,
 }
 
@@ -111,6 +113,7 @@ impl Stats {
             input: InputStats::from_block(&block, date.clone(), &tx_infos),
             output: OutputStats::from_block(&block, date.clone(), &tx_infos),
             script: ScriptStats::from_block(&block, date.clone(), &tx_infos),
+            feerate: FeerateStats::from_block(&block, date.clone(), &tx_infos),
         })
     }
 }
@@ -791,7 +794,7 @@ impl OutputStats {
     }
 }
 
-#[derive(Queryable, Selectable, Insertable, AsChangeset, Clone, Debug, PartialEq)]
+#[derive(Queryable, Selectable, Insertable, AsChangeset, Clone, Debug, PartialEq, Default)]
 #[diesel(table_name = crate::schema::feerate_stats)]
 #[diesel(primary_key(height))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
@@ -851,10 +854,131 @@ pub struct FeerateStats {
     feerate_package_avg: f32,
 }
 
+/// helper function to treat f64::NAN values as 0. If we try to insert NANs into the database,
+/// these will be treated as NULL, which collides with the NOT NULL constraints we have on some
+/// tables
+fn f64_nan_as_0(a: f64) -> f64 {
+    if a.is_nan() {
+        return 0f64;
+    }
+    a
+}
+
+impl FeerateStats {
+    pub fn from_block(block: &Block, date: String, tx_infos: &Vec<TxInfo>) -> FeerateStats {
+        let num_tx_without_coinbase = block.txdata.len() - 1;
+
+        let mut fees_sat = Vec::with_capacity(num_tx_without_coinbase);
+        let mut sizes: Vec<u64> = Vec::with_capacity(num_tx_without_coinbase);
+        let mut feerates = Vec::with_capacity(num_tx_without_coinbase);
+
+        let mut is_coinbase = true;
+        for (tx, _) in block.txdata.iter().zip(tx_infos.iter()) {
+            if is_coinbase {
+                // We don't consider the coinbase in the feerate stats. It has a fee of 0.
+                is_coinbase = false;
+                continue;
+            }
+            let fee = tx.fee.unwrap_or_default();
+            let feerate: f64 = fee.to_sat() as f64 / tx.vsize as f64;
+
+            fees_sat.push(fee.to_sat());
+            sizes.push(tx.size as u64);
+            feerates.push(feerate);
+        }
+
+        let mut fees_data: Data<Vec<f64>> = Data::new(fees_sat.iter().map(|f| *f as f64).collect());
+        let mut sizes_data: Data<Vec<f64>> = Data::new(sizes.iter().map(|f| *f as f64).collect());
+        let mut feerates_data: Data<Vec<f64>> = Data::new(feerates.clone());
+
+        let fee_sum: u64 = fees_sat.iter().sum();
+        let fee_avg = match num_tx_without_coinbase {
+            0 => 0.0f32,
+            _ => fee_sum as f32 / num_tx_without_coinbase as f32,
+        };
+
+        let size_sum: u64 = sizes.iter().sum();
+        let size_avg = match num_tx_without_coinbase {
+            0 => 0.0f32,
+            _ => size_sum as f32 / num_tx_without_coinbase as f32,
+        };
+
+        let feerate_sum: f64 = feerates.iter().sum();
+        let feerate_avg = match num_tx_without_coinbase {
+            0 => 0.0f32,
+            _ => feerate_sum as f32 / num_tx_without_coinbase as f32,
+        };
+
+        FeerateStats {
+            height: block.height,
+            date: date,
+            fee_min: *(fees_sat.iter().min().unwrap_or(&0)) as i64,
+            fee_5th_percentile: fees_data.percentile(5) as i64,
+            fee_10th_percentile: fees_data.percentile(10) as i64,
+            fee_25th_percentile: fees_data.percentile(25) as i64,
+            fee_35th_percentile: fees_data.percentile(35) as i64,
+            fee_50th_percentile: fees_data.percentile(50) as i64,
+            fee_65th_percentile: fees_data.percentile(65) as i64,
+            fee_75th_percentile: fees_data.percentile(75) as i64,
+            fee_90th_percentile: fees_data.percentile(90) as i64,
+            fee_95th_percentile: fees_data.percentile(95) as i64,
+            fee_max: *(fees_sat.iter().max().unwrap_or(&0)) as i64,
+            fee_sum: fee_sum as i64,
+            fee_avg,
+            size_min: *(sizes.iter().min().unwrap_or(&0)) as i32,
+            size_5th_percentile: sizes_data.percentile(5) as i32,
+            size_10th_percentile: sizes_data.percentile(10) as i32,
+            size_25th_percentile: sizes_data.percentile(25) as i32,
+            size_35th_percentile: sizes_data.percentile(35) as i32,
+            size_50th_percentile: sizes_data.percentile(50) as i32,
+            size_65th_percentile: sizes_data.percentile(65) as i32,
+            size_75th_percentile: sizes_data.percentile(75) as i32,
+            size_90th_percentile: sizes_data.percentile(90) as i32,
+            size_95th_percentile: sizes_data.percentile(95) as i32,
+            size_max: *(sizes.iter().max().unwrap_or(&0)) as i32,
+            size_avg,
+            size_sum: size_sum as i64,
+            feerate_min: *(feerates
+                .iter()
+                .filter(|x| !x.is_nan())
+                .min_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(&0.0)) as f32,
+            feerate_5th_percentile: f64_nan_as_0(feerates_data.percentile(5)) as f32,
+            feerate_10th_percentile: f64_nan_as_0(feerates_data.percentile(10)) as f32,
+            feerate_25th_percentile: f64_nan_as_0(feerates_data.percentile(25)) as f32,
+            feerate_35th_percentile: f64_nan_as_0(feerates_data.percentile(35)) as f32,
+            feerate_50th_percentile: f64_nan_as_0(feerates_data.percentile(50)) as f32,
+            feerate_65th_percentile: f64_nan_as_0(feerates_data.percentile(65)) as f32,
+            feerate_75th_percentile: f64_nan_as_0(feerates_data.percentile(75)) as f32,
+            feerate_90th_percentile: f64_nan_as_0(feerates_data.percentile(90)) as f32,
+            feerate_95th_percentile: f64_nan_as_0(feerates_data.percentile(95)) as f32,
+            feerate_max: *(feerates
+                .iter()
+                .filter(|x| !x.is_nan())
+                .max_by(|a, b| a.partial_cmp(b).unwrap())
+                .unwrap_or(&0.0)) as f32,
+            feerate_avg,
+            // TODO: Transaction package feerate stats are not yet implemented.
+            feerate_package_min: 0.0f32,
+            feerate_package_5th_percentile: 0.0f32,
+            feerate_package_10th_percentile: 0.0f32,
+            feerate_package_25th_percentile: 0.0f32,
+            feerate_package_35th_percentile: 0.0f32,
+            feerate_package_50th_percentile: 0.0f32,
+            feerate_package_65th_percentile: 0.0f32,
+            feerate_package_75th_percentile: 0.0f32,
+            feerate_package_90th_percentile: 0.0f32,
+            feerate_package_95th_percentile: 0.0f32,
+            feerate_package_max: 0.0f32,
+            feerate_package_avg: 0.0f32,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::rest::Block;
-    use crate::stats::{BlockStats, InputStats, OutputStats, ScriptStats, TxStats};
+    use crate::stats::{BlockStats, FeerateStats, InputStats, OutputStats, ScriptStats, TxStats};
     use crate::Stats;
     use serde::Deserialize;
     use std::fs::File;
@@ -1037,6 +1161,61 @@ mod tests {
                 sigs_sighash_none_acp: 0,
                 sigs_sighash_single_acp: 0,
             },
+            feerate: FeerateStats {
+                height: 888395,
+                date: "2025-03-18".to_string(),
+                fee_min: 142,
+                fee_5th_percentile: 166,
+                fee_10th_percentile: 166,
+                fee_25th_percentile: 166,
+                fee_35th_percentile: 191,
+                fee_50th_percentile: 202,
+                fee_65th_percentile: 361,
+                fee_75th_percentile: 6197,
+                fee_90th_percentile: 59271,
+                fee_95th_percentile: 59271,
+                fee_max: 59271,
+                fee_sum: 1034642,
+                fee_avg: 14173.178f32,
+                size_min: 77,
+                size_5th_percentile: 189,
+                size_10th_percentile: 189,
+                size_25th_percentile: 320,
+                size_35th_percentile: 320,
+                size_50th_percentile: 320,
+                size_65th_percentile: 353,
+                size_75th_percentile: 7801,
+                size_90th_percentile: 107057,
+                size_95th_percentile: 107057,
+                size_max: 107057,
+                size_avg: 25458.863,
+                size_sum: 1858497,
+                feerate_min: 1.0,
+                feerate_5th_percentile: 1.010582f32,
+                feerate_10th_percentile: 1.010582f32,
+                feerate_25th_percentile: 1.0297971f32,
+                feerate_35th_percentile: 1.0297971f32,
+                feerate_50th_percentile: 1.0412371f32,
+                feerate_65th_percentile: 1.0993377f32,
+                feerate_75th_percentile: 1.0993377f32,
+                feerate_90th_percentile: 2.0282176f32,
+                feerate_95th_percentile: 3.5460992f32,
+                feerate_max: 31.0f32,
+                feerate_avg: 1.7306631f32,
+                // TODO: Transaction package feerate stats are not yet implemented.
+                feerate_package_min: 0.0f32,
+                feerate_package_5th_percentile: 0.0f32,
+                feerate_package_10th_percentile: 0.0f32,
+                feerate_package_25th_percentile: 0.0f32,
+                feerate_package_35th_percentile: 0.0f32,
+                feerate_package_50th_percentile: 0.0f32,
+                feerate_package_65th_percentile: 0.0f32,
+                feerate_package_75th_percentile: 0.0f32,
+                feerate_package_90th_percentile: 0.0f32,
+                feerate_package_95th_percentile: 0.0f32,
+                feerate_package_max: 0.0f32,
+                feerate_package_avg: 0.0f32,
+            },
         };
 
         diff_stats(&stats, &expected_stats);
@@ -1206,6 +1385,61 @@ mod tests {
                 sigs_sighash_none_acp: 0,
                 sigs_sighash_single_acp: 0,
             },
+            feerate: FeerateStats {
+                height: 739990,
+                date: "2022-06-09".to_string(),
+                fee_min: 122,
+                fee_5th_percentile: 250,
+                fee_10th_percentile: 285,
+                fee_25th_percentile: 380,
+                fee_35th_percentile: 617,
+                fee_50th_percentile: 1017,
+                fee_65th_percentile: 1425,
+                fee_75th_percentile: 2158,
+                fee_90th_percentile: 5225,
+                fee_95th_percentile: 10710,
+                fee_max: 283020,
+                fee_sum: 1983001,
+                fee_avg: 3079.194f32,
+                size_min: 188,
+                size_5th_percentile: 192,
+                size_10th_percentile: 194,
+                size_25th_percentile: 223,
+                size_35th_percentile: 223,
+                size_50th_percentile: 225,
+                size_65th_percentile: 340,
+                size_75th_percentile: 372,
+                size_90th_percentile: 631,
+                size_95th_percentile: 1105,
+                size_max: 65782,
+                size_avg: 832.9441,
+                size_sum: 536416,
+                feerate_min: 1.0f32,
+                feerate_5th_percentile: 1.2539445f32,
+                feerate_10th_percentile: 2.006713f32,
+                feerate_25th_percentile: 2.0300858f32,
+                feerate_35th_percentile: 3.0f32,
+                feerate_50th_percentile: 5.9503546f32,
+                feerate_65th_percentile: 8.430503f32,
+                feerate_75th_percentile: 9.073471f32,
+                feerate_90th_percentile: 18.744535f32,
+                feerate_95th_percentile: 26.2769f32,
+                feerate_max: 233.64487f32,
+                feerate_avg: 10.158637f32,
+                // TODO: Transaction package feerate stats are not yet implemented.
+                feerate_package_min: 0.0f32,
+                feerate_package_5th_percentile: 0.0f32,
+                feerate_package_10th_percentile: 0.0f32,
+                feerate_package_25th_percentile: 0.0f32,
+                feerate_package_35th_percentile: 0.0f32,
+                feerate_package_50th_percentile: 0.0f32,
+                feerate_package_65th_percentile: 0.0f32,
+                feerate_package_75th_percentile: 0.0f32,
+                feerate_package_90th_percentile: 0.0f32,
+                feerate_package_95th_percentile: 0.0f32,
+                feerate_package_max: 0.0f32,
+                feerate_package_avg: 0.0f32,
+            },
         };
 
         diff_stats(&stats, &expected_stats);
@@ -1374,6 +1608,61 @@ mod tests {
                 sigs_sighash_all_acp: 0,
                 sigs_sighash_none_acp: 0,
                 sigs_sighash_single_acp: 0,
+            },
+            feerate: FeerateStats {
+                height: 361582,
+                date: "2015-06-19".to_string(),
+                fee_min: 242,
+                fee_5th_percentile: 10000,
+                fee_10th_percentile: 10000,
+                fee_25th_percentile: 10000,
+                fee_35th_percentile: 10000,
+                fee_50th_percentile: 10000,
+                fee_65th_percentile: 10000,
+                fee_75th_percentile: 10000,
+                fee_90th_percentile: 12723,
+                fee_95th_percentile: 29414,
+                fee_max: 180221,
+                fee_sum: 3687509,
+                fee_avg: 13360.54f32,
+                size_min: 87,
+                size_5th_percentile: 223,
+                size_10th_percentile: 225,
+                size_25th_percentile: 226,
+                size_35th_percentile: 226,
+                size_50th_percentile: 337,
+                size_65th_percentile: 374,
+                size_75th_percentile: 409,
+                size_90th_percentile: 737,
+                size_95th_percentile: 943,
+                size_max: 52545,
+                size_avg: 591.6884,
+                size_sum: 163306,
+                feerate_min: 1.00492,
+                feerate_5th_percentile: 10.435551f32,
+                feerate_10th_percentile: 13.185673f32,
+                feerate_25th_percentile: 22.883295f32,
+                feerate_35th_percentile: 26.741552f32,
+                feerate_50th_percentile: 29.674635f32,
+                feerate_65th_percentile: 44.247787f32,
+                feerate_75th_percentile: 44.444443f32,
+                feerate_90th_percentile: 44.873833f32,
+                feerate_95th_percentile: 64.15262f32,
+                feerate_max: 444.44446f32,
+                feerate_avg: 40.540836f32,
+                // TODO: Transaction package feerate stats are not yet implemented.
+                feerate_package_min: 0.0f32,
+                feerate_package_5th_percentile: 0.0f32,
+                feerate_package_10th_percentile: 0.0f32,
+                feerate_package_25th_percentile: 0.0f32,
+                feerate_package_35th_percentile: 0.0f32,
+                feerate_package_50th_percentile: 0.0f32,
+                feerate_package_65th_percentile: 0.0f32,
+                feerate_package_75th_percentile: 0.0f32,
+                feerate_package_90th_percentile: 0.0f32,
+                feerate_package_95th_percentile: 0.0f32,
+                feerate_package_max: 0.0f32,
+                feerate_package_avg: 0.0f32,
             },
         };
 

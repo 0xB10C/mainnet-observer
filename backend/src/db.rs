@@ -1,6 +1,8 @@
 use crate::gen_csv::PROXY_POOL_GROUP_ANTPOOL;
 use crate::schema;
-use crate::stats::{BlockStats, InputStats, OutputStats, ScriptStats, Stats, TxStats};
+use crate::stats::{
+    BlockStats, FeerateStats, InputStats, OutputStats, ScriptStats, Stats, TxStats,
+};
 use crate::MainError;
 use diesel::prelude::*;
 use diesel::sql_query;
@@ -360,6 +362,7 @@ pub fn insert_stats(
     insert_input_stats(conn, &stats.iter().map(|s| s.input.clone()).collect())?;
     insert_output_stats(conn, &stats.iter().map(|s| s.output.clone()).collect())?;
     insert_script_stats(conn, &stats.iter().map(|s| s.script.clone()).collect())?;
+    insert_feerate_stats(conn, &stats.iter().map(|s| s.feerate.clone()).collect())?;
     Ok(())
 }
 
@@ -534,6 +537,43 @@ fn insert_script_stats(
                         diesel::insert_into(script_stats::table)
                             .values(stat)
                             .on_conflict(script_stats::height)
+                            .do_update()
+                            .set(stat)
+                            .execute(conn)?;
+                    }
+                    return Ok(());
+                }
+                _ => return Err(e),
+            },
+            _ => return Err(e),
+        }
+    }
+    Ok(())
+}
+
+fn insert_feerate_stats(
+    conn: &mut SqliteConnection,
+    stats: &Vec<FeerateStats>,
+) -> Result<(), diesel::result::Error> {
+    use crate::schema::feerate_stats;
+    debug!("Inserting a batch of {} feerate stats", stats.len());
+
+    if let Err(e) = diesel::insert_into(feerate_stats::table)
+        .values(stats)
+        .execute(conn)
+    {
+        match e {
+            diesel::result::Error::DatabaseError(db_error, _) => match db_error {
+                diesel::result::DatabaseErrorKind::UniqueViolation => {
+                    debug!(
+                        "Falling back to individually inserting {} feerate stats: {}",
+                        stats.len(),
+                        e
+                    );
+                    for stat in stats.iter() {
+                        diesel::insert_into(feerate_stats::table)
+                            .values(stat)
+                            .on_conflict(feerate_stats::height)
                             .do_update()
                             .set(stat)
                             .execute(conn)?;
