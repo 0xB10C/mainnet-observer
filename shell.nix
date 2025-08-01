@@ -15,6 +15,7 @@ pkgs.mkShell {
     pkgs.rustc
     pkgs.rustfmt
     pkgs.sqlite
+    pkgs.diesel-cli
 
     # for integration-tests
     pkgs.bitcoind
