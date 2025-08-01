@@ -82,6 +82,8 @@ diesel::table! {
         feerate_package_95th_percentile -> Float,
         feerate_package_max -> Float,
         feerate_package_avg -> Float,
+        zero_fee_tx -> Integer,
+        below_1_sat_vbyte -> Integer,
     }
 }
 

@@ -852,6 +852,9 @@ pub struct FeerateStats {
     feerate_package_95th_percentile: f32,
     feerate_package_max: f32,
     feerate_package_avg: f32,
+    // Added 2025-08-01:
+    zero_fee_tx: i32,
+    below_1_sat_vbyte: i32,
 }
 
 /// helper function to treat f64::NAN values as 0. If we try to insert NANs into the database,
@@ -871,6 +874,8 @@ impl FeerateStats {
         let mut fees_sat = Vec::with_capacity(num_tx_without_coinbase);
         let mut sizes: Vec<u64> = Vec::with_capacity(num_tx_without_coinbase);
         let mut feerates = Vec::with_capacity(num_tx_without_coinbase);
+        let mut zero_fee_tx = 0;
+        let mut below_1_sat_vbyte = 0;
 
         let mut is_coinbase = true;
         for (tx, _) in block.txdata.iter().zip(tx_infos.iter()) {
@@ -881,6 +886,16 @@ impl FeerateStats {
             }
             let fee = tx.fee.unwrap_or_default();
             let feerate: f64 = fee.to_sat() as f64 / tx.vsize as f64;
+
+            if feerate < 1.0f64 {
+                below_1_sat_vbyte += 1;
+            }
+
+            if let Some(fee) = tx.fee {
+                if fee.to_sat() == 0 {
+                    zero_fee_tx += 1;
+                }
+            }
 
             fees_sat.push(fee.to_sat());
             sizes.push(tx.size as u64);
@@ -971,6 +986,8 @@ impl FeerateStats {
             feerate_package_95th_percentile: 0.0f32,
             feerate_package_max: 0.0f32,
             feerate_package_avg: 0.0f32,
+            zero_fee_tx,
+            below_1_sat_vbyte,
         }
     }
 }
@@ -1215,6 +1232,9 @@ mod tests {
                 feerate_package_95th_percentile: 0.0f32,
                 feerate_package_max: 0.0f32,
                 feerate_package_avg: 0.0f32,
+
+                below_1_sat_vbyte: 0,
+                zero_fee_tx: 0,
             },
         };
 
@@ -1439,6 +1459,9 @@ mod tests {
                 feerate_package_95th_percentile: 0.0f32,
                 feerate_package_max: 0.0f32,
                 feerate_package_avg: 0.0f32,
+
+                below_1_sat_vbyte: 0,
+                zero_fee_tx: 0,
             },
         };
 
@@ -1663,6 +1686,9 @@ mod tests {
                 feerate_package_95th_percentile: 0.0f32,
                 feerate_package_max: 0.0f32,
                 feerate_package_avg: 0.0f32,
+
+                below_1_sat_vbyte: 0,
+                zero_fee_tx: 0,
             },
         };
 
