@@ -1,7 +1,5 @@
 ---
 title: "Transaction Fees"
-position: -1000
+position: 5
 description: ""
-_build:
-    list: never
 ---
