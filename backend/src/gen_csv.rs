@@ -6,12 +6,13 @@ use std::collections::BTreeSet;
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
-const METRIC_TABLES: [&str; 5] = [
+const METRIC_TABLES: [&str; 6] = [
     "block_stats",
     "tx_stats",
     "script_stats",
     "input_stats",
     "output_stats",
+    "feerate_stats",
 ];
 const COLUMN_NAMES_THAT_ARENT_METRICS: [&str; 6] =
     ["height", "date", "version", "nonce", "bits", "pool_id"];
