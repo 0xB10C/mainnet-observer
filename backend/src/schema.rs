@@ -84,6 +84,16 @@ diesel::table! {
         feerate_package_avg -> Float,
         zero_fee_tx -> Integer,
         below_1_sat_vbyte -> Integer,
+        feerate_1_2_sat_vbyte -> Integer,
+        feerate_2_5_sat_vbyte -> Integer,
+        feerate_5_10_sat_vbyte -> Integer,
+        feerate_10_25_sat_vbyte -> Integer,
+        feerate_25_50_sat_vbyte -> Integer,
+        feerate_50_100_sat_vbyte -> Integer,
+        feerate_100_250_sat_vbyte -> Integer,
+        feerate_250_500_sat_vbyte -> Integer,
+        feerate_500_1000_sat_vbyte -> Integer,
+        feerate_1000_plus_sat_vbyte -> Integer,
     }
 }
 
