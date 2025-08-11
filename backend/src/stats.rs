@@ -855,6 +855,17 @@ pub struct FeerateStats {
     // Added 2025-08-01:
     zero_fee_tx: i32,
     below_1_sat_vbyte: i32,
+    // Fee band counts, added 2025-08-11
+    feerate_1_2_sat_vbyte: i32,
+    feerate_2_5_sat_vbyte: i32,
+    feerate_5_10_sat_vbyte: i32,
+    feerate_10_25_sat_vbyte: i32,
+    feerate_25_50_sat_vbyte: i32,
+    feerate_50_100_sat_vbyte: i32,
+    feerate_100_250_sat_vbyte: i32,
+    feerate_250_500_sat_vbyte: i32,
+    feerate_500_1000_sat_vbyte: i32,
+    feerate_1000_plus_sat_vbyte: i32,
 }
 
 /// helper function to treat f64::NAN values as 0. If we try to insert NANs into the database,
@@ -876,6 +887,17 @@ impl FeerateStats {
         let mut feerates = Vec::with_capacity(num_tx_without_coinbase);
         let mut zero_fee_tx = 0;
         let mut below_1_sat_vbyte = 0;
+        // Fee band counters
+        let mut feerate_1_2_sat_vbyte = 0;
+        let mut feerate_2_5_sat_vbyte = 0;
+        let mut feerate_5_10_sat_vbyte = 0;
+        let mut feerate_10_25_sat_vbyte = 0;
+        let mut feerate_25_50_sat_vbyte = 0;
+        let mut feerate_50_100_sat_vbyte = 0;
+        let mut feerate_100_250_sat_vbyte = 0;
+        let mut feerate_250_500_sat_vbyte = 0;
+        let mut feerate_500_1000_sat_vbyte = 0;
+        let mut feerate_1000_plus_sat_vbyte = 0;
 
         let mut is_coinbase = true;
         for (tx, _) in block.txdata.iter().zip(tx_infos.iter()) {
@@ -887,8 +909,19 @@ impl FeerateStats {
             let fee = tx.fee.unwrap_or_default();
             let feerate: f64 = fee.to_sat() as f64 / tx.vsize as f64;
 
-            if feerate < 1.0f64 {
-                below_1_sat_vbyte += 1;
+            // Count transactions in fee rate bands
+            match feerate {
+                x if x < 1.0 => below_1_sat_vbyte += 1,
+                1.0..2.0 => feerate_1_2_sat_vbyte += 1,
+                2.0..5.0 => feerate_2_5_sat_vbyte += 1,
+                5.0..10.0 => feerate_5_10_sat_vbyte += 1,
+                10.0..25.0 => feerate_10_25_sat_vbyte += 1,
+                25.0..50.0 => feerate_25_50_sat_vbyte += 1,
+                50.0..100.0 => feerate_50_100_sat_vbyte += 1,
+                100.0..250.0 => feerate_100_250_sat_vbyte += 1,
+                250.0..500.0 => feerate_250_500_sat_vbyte += 1,
+                500.0..1000.0 => feerate_500_1000_sat_vbyte += 1,
+                _ => feerate_1000_plus_sat_vbyte += 1, // 1000 or more
             }
 
             if let Some(fee) = tx.fee {
@@ -988,6 +1021,16 @@ impl FeerateStats {
             feerate_package_avg: 0.0f32,
             zero_fee_tx,
             below_1_sat_vbyte,
+            feerate_1_2_sat_vbyte,
+            feerate_2_5_sat_vbyte,
+            feerate_5_10_sat_vbyte,
+            feerate_10_25_sat_vbyte,
+            feerate_25_50_sat_vbyte,
+            feerate_50_100_sat_vbyte,
+            feerate_100_250_sat_vbyte,
+            feerate_250_500_sat_vbyte,
+            feerate_500_1000_sat_vbyte,
+            feerate_1000_plus_sat_vbyte,
         }
     }
 }
@@ -1235,6 +1278,16 @@ mod tests {
 
                 below_1_sat_vbyte: 0,
                 zero_fee_tx: 0,
+                feerate_1_2_sat_vbyte: 66,
+                feerate_2_5_sat_vbyte: 5,
+                feerate_5_10_sat_vbyte: 1,
+                feerate_10_25_sat_vbyte: 0,
+                feerate_25_50_sat_vbyte: 1,
+                feerate_50_100_sat_vbyte: 0,
+                feerate_100_250_sat_vbyte: 0,
+                feerate_250_500_sat_vbyte: 0,
+                feerate_500_1000_sat_vbyte: 0,
+                feerate_1000_plus_sat_vbyte: 0,
             },
         };
 
@@ -1462,6 +1515,16 @@ mod tests {
 
                 below_1_sat_vbyte: 0,
                 zero_fee_tx: 0,
+                feerate_1_2_sat_vbyte: 48,
+                feerate_2_5_sat_vbyte: 247,
+                feerate_5_10_sat_vbyte: 202,
+                feerate_10_25_sat_vbyte: 110,
+                feerate_25_50_sat_vbyte: 21,
+                feerate_50_100_sat_vbyte: 6,
+                feerate_100_250_sat_vbyte: 10,
+                feerate_250_500_sat_vbyte: 0,
+                feerate_500_1000_sat_vbyte: 0,
+                feerate_1000_plus_sat_vbyte: 0,
             },
         };
 
@@ -1689,6 +1752,16 @@ mod tests {
 
                 below_1_sat_vbyte: 0,
                 zero_fee_tx: 0,
+                feerate_1_2_sat_vbyte: 5,
+                feerate_2_5_sat_vbyte: 5,
+                feerate_5_10_sat_vbyte: 3,
+                feerate_10_25_sat_vbyte: 69,
+                feerate_25_50_sat_vbyte: 170,
+                feerate_50_100_sat_vbyte: 15,
+                feerate_100_250_sat_vbyte: 4,
+                feerate_250_500_sat_vbyte: 5,
+                feerate_500_1000_sat_vbyte: 0,
+                feerate_1000_plus_sat_vbyte: 0,
             },
         };
 
