@@ -1,0 +1,54 @@
+name: frontend CI
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+
+jobs:
+  frontend:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - name: Setup Hugo
+        uses: peaceiris/actions-hugo@v3
+      - name: Build
+        run: hugo --logLevel debug --printMemoryUsage --printI18nWarnings --printUnusedTemplates --source ./frontend
+
+      # Thumbnail PNG size check
+      - name: Install optipng
+        run: sudo apt-get install -y optipng
+
+      - name: Check PNG optimization
+        run: |
+          set -e
+          EXIT_CODE=0
+          echo "Checking PNG optimization..."
+          for file in frontend/static/img/chart-thumbnails/*.png; do
+            if [ -f "$file" ]; then
+              tmpfile=$(mktemp)
+              cp "$file" "$tmpfile"
+              optipng -quiet "$tmpfile" > /dev/null 2>&1
+
+              orig_size=$(stat -c%s "$file")
+              new_size=$(stat -c%s "$tmpfile")
+
+              if [ "$new_size" -lt "$orig_size" ]; then
+                saved=$((orig_size - new_size))
+                echo " $file can be optimized (save ${saved} bytes)"
+                EXIT_CODE=1
+              fi
+
+              rm "$tmpfile"
+            fi
+          done
+
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo ""
+            echo "Some PNGs can still be optimized. Please run:"
+            echo "    optipng frontend/static/img/chart-thumbnails/*.png"
+            exit 1
+          else
+            echo "All PNGs are optimized."
+          fi
