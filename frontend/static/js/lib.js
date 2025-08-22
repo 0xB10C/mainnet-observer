@@ -224,6 +224,36 @@ function doubleLineChart(d, NAMES, movingAverage, PRECISION, START_DATE, ANNOTAT
   }
 }
 
+// multi line chart
+// expects date, and multiple DATA_KEYS entries
+function multiLineChart(d, DATA_KEYS, NAMES, movingAverage, PRECISION, START_DATE, ANNOTATIONS = []) {
+  if (DATA_KEYS.length != NAMES.length) {
+    alert("DATA_KEYS length does not match NAMES length!");
+    return
+  }
+  return {
+    ...BASE_CHART_OPTION(START_DATE),
+    tooltip: { trigger: 'axis', axisPointer: tooltipAxisPointer, position: tooltipPosition},
+    xAxis: { type: "time" },
+    yAxis: { type: 'value' },
+    series: zip(NAMES, DATA_KEYS).map(([name, key]) => {
+      return { 
+        name: name, 
+        smooth: false, 
+        type: 'line', 
+        data: zip(d.date, calcMovingAverage(d[key], movingAverage, PRECISION)), 
+        symbol: "none",
+        lineStyle: { width: 2 },
+        emphasis: { focus: 'series' }
+      }
+    }).concat(
+    [
+      // Annotations:
+      { type: "line", markLine: { symbol: "none", label:{show: showAnnotations, position:"insideEndTop", backgroundColor: "transparent"}, lineStyle: { color: showAnnotations ? "gray": "transparent", type: "dotted" }, data: ANNOTATIONS.map(a => { return { xAxis: a.date, label: { formatter: a.text }} } ) } }
+    ]),
+  }
+}
+
 // stacked area chart with values from 0 to 100
 // expects date, and multiple DATA_KEYS entries
 function stackedAreaPercentageChart(d, DATA_KEYS, NAMES, movingAverage, PRECISION, START_DATE, ANNOTATIONS = []) {
