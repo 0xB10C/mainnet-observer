@@ -1,6 +1,6 @@
 {{ define "main"}}
 <article class="container mx-0 px-0 mt-3">
-  
+
   <header class="row">
     <h2 class="col-12">{{ .Title }}</h2>
     <span class="col-12">{{ .Summary | plainify  }}</span>
@@ -44,7 +44,7 @@
 
 {{- define "js" -}}
 <script>
-  const chartPNGFileName = "{{ .Page.File.TranslationBaseName }}.png";
+  const chartPNGFileName = "{{ .Page.File.TranslationBaseName }}";
   const isDevBuild = {{ if .Site.BuildDrafts }} true {{ else }} false {{ end }};
   const watermarkText = "{{ .Site.Title }}"
 </script>
