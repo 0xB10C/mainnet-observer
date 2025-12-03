@@ -1,6 +1,6 @@
 const ANNOTATIONS = [annotationSegWitActivated, annotationBitcoinCoreSegWitWalletReleased, annotationBitcoinCore23, annotationTaprootActivated]
 const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_30D
-const NAMES = ["P2WSH", "P2WPKH", "nested P2WSH", "nested P2WPKH", "P2TR key-path", "P2TR script-path"]
+const NAMES = ["nested P2WPKH", "nested P2WSH", "P2WPKH", "P2WSH", "P2TR key-path", "P2TR script-path"]
 const PRECISION = 1
 let START_DATE =  new Date("2017-08");
 
@@ -27,10 +27,10 @@ function preprocess(input) {
 
     const total = nativeSH + nativePKH + nestedPKH + nestedSH + p2trKeypath + p2trScriptpath
 
-    const y1 = nativeSH / total || 0
-    const y2 = nativePKH / total || 0
-    const y3 = nestedPKH / total || 0
-    const y4 = nestedSH / total || 0
+    const y1 = nestedPKH / total || 0
+    const y2 = nestedSH / total || 0
+    const y3 = nativePKH / total || 0
+    const y4 = nativeSH / total || 0
     const y5 = p2trKeypath / total || 0
     const y6 = p2trScriptpath / total || 0
     
