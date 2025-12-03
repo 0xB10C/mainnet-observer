@@ -1,4 +1,6 @@
-use bitcoin::{error::UnprefixedHexError, CompactTarget, Network, Target, Transaction, Txid};
+use bitcoin::{
+    error::UnprefixedHexError, Amount, CompactTarget, Network, Target, Transaction, Txid,
+};
 use bitcoin_pool_identification::{default_data, Pool, PoolIdentification};
 use chrono::DateTime;
 use diesel::prelude::*;
@@ -294,6 +296,7 @@ pub struct TxStats {
     pub tx_1_input_1_output: i32,
     pub tx_1_input_2_output: i32,
     pub tx_spending_newly_created_utxos: i32,
+    pub tx_spending_ephemeral_dust: i32,
 
     pub tx_timelock_height: i32,
     pub tx_timelock_timestamp: i32,
@@ -306,7 +309,8 @@ impl TxStats {
         let height = block.height;
         let mut s = TxStats::default();
 
-        let txids_in_this_block: HashSet<Txid> = block.txdata.iter().map(|tx| tx.txid).collect();
+        let mut txids_in_this_block: HashSet<&Txid> = HashSet::with_capacity(block.txdata.len());
+        let mut ephemeral_dust_outpoints_in_this_block: HashSet<(&Txid, u32)> = HashSet::new();
 
         s.height = height;
         s.date = date;
@@ -367,13 +371,56 @@ impl TxStats {
                 s.tx_1_output += 1;
             }
 
-            if tx.input.iter().any(|i| {
-                if let InputData::NonCoinbase { txid, .. } = &i.data {
-                    return txids_in_this_block.contains(txid);
+            let mut tx_spending_newly_created_utxos = false;
+            let mut tx_spending_ephemeral_dust = false;
+            for (txid, vout) in tx.input.iter().filter_map(|i| {
+                if let InputData::NonCoinbase { txid, vout, .. } = &i.data {
+                    Some((txid, vout))
+                } else {
+                    None
                 }
-                false
             }) {
-                s.tx_spending_newly_created_utxos += 1;
+                tx_spending_newly_created_utxos |= txids_in_this_block.contains(txid);
+                tx_spending_ephemeral_dust |= ephemeral_dust_outpoints_in_this_block
+                    .take(&(txid, *vout))
+                    .is_some()
+                    && tx.version == 3
+                    // unwrap safety: we filter for non-coinbase inputs above, hence this transaction is non-coinbase
+                    && tx.fee.unwrap() != Amount::ZERO
+                    && tx.vsize <= 1_000;
+
+                if (tx_spending_ephemeral_dust || ephemeral_dust_outpoints_in_this_block.is_empty())
+                    && tx_spending_newly_created_utxos
+                {
+                    break;
+                }
+            }
+            s.tx_spending_newly_created_utxos += i32::from(tx_spending_newly_created_utxos);
+            s.tx_spending_ephemeral_dust += i32::from(tx_spending_ephemeral_dust);
+
+            // A parent is always ordered before the child in the transaction list of a block, so we can insert the
+            // parent here, and detect any children of this parent in subsequent iterations of the loop
+            txids_in_this_block.insert(&tx.txid);
+
+            // We do not include any cases of ephemeral dust on coinbase transactions (these transactions have their
+            // `tx.fee` set to `None`); we are only interested in cases of ephemeral dust that could have been submitted
+            // via the p2p network.
+            if tx.version == 3 && tx.fee == Some(Amount::ZERO) && tx.vsize <= 10_000 {
+                let staged_ephemeral_dust_outpoints: Vec<_> = tx
+                    .output
+                    .iter()
+                    .filter_map(|output| {
+                        (output.value < output.script_pub_key.script.minimal_non_dust())
+                            .then_some((&tx.txid, output.n))
+                    })
+                    .collect();
+
+                // A transaction with more than 1 dust output was likely submitted out-of-band, so don't count them in
+                // the `tx_spending_ephemeral_dust` tally
+                if staged_ephemeral_dust_outpoints.len() == 1 {
+                    ephemeral_dust_outpoints_in_this_block
+                        .extend(staged_ephemeral_dust_outpoints.into_iter());
+                }
             }
 
             if tx.lock_time.is_block_height() && tx.lock_time.to_consensus_u32() > 0 {
@@ -1059,6 +1106,73 @@ mod tests {
     }
 
     #[test]
+    fn test_ephemeral_dust() {
+        // potential false positives
+
+        let stats_215049 = {
+            let buffer = BufReader::new(File::open("./testdata/215049.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("testdata blocks should not error")
+        };
+        // https://mempool.space/tx/f415cbeb5abfd19758a79e984de8e9a1a15ec5cb3bb07f6c816edac13dfcd908#vout=0
+        assert_eq!(stats_215049.tx.tx_spending_ephemeral_dust, 0);
+
+        let stats_227154 = {
+            let buffer = BufReader::new(File::open("./testdata/227154.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("testdata blocks should not error")
+        };
+        // https://mempool.space/tx/e36a2ff16b6b45e3cc873815f899a98b0e923d4d48901f4737c133dc5a740551#vout=1
+        assert_eq!(stats_227154.tx.tx_spending_ephemeral_dust, 0);
+
+        let stats_367843 = {
+            let buffer = BufReader::new(File::open("./testdata/367843.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("testdata blocks should not error")
+        };
+        // https://mempool.space/tx/a842b87403e6d6ca1a9ea39b16d496ebeb6ab15b83acb619cc10daba08114029#vout=0
+        assert_eq!(stats_367843.tx.tx_spending_ephemeral_dust, 0);
+
+        // true positives
+
+        let stats_920533 = {
+            let buffer = BufReader::new(File::open("./testdata/920533.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("testdata blocks should not error")
+        };
+        // https://mempool.space/tx/c660274eea2851d78fc8beffc0a2ff5420599d371560fb6a46a8d0254fa8840d#vin=0
+        assert_eq!(stats_920533.tx.tx_spending_ephemeral_dust, 1);
+
+        let stats_913612 = {
+            let buffer = BufReader::new(File::open("./testdata/913612.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("testdata blocks should not error")
+        };
+        // https://mempool.space/tx/f71f1aeee07e564195fbe643d77951a184747efa9e9d95ce56115478c1ed0323#vout=1
+        // https://mempool.space/tx/6bc6b8bfe565cf40b6d2b9c50b31f5824d6e915eb9af1c533344aaeafe558e63#vout=1
+        assert_eq!(stats_913612.tx.tx_spending_ephemeral_dust, 2);
+
+        let stats_925262 = {
+            let buffer = BufReader::new(File::open("./testdata/925262.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("testdata blocks should not error")
+        };
+        // https://mempool.space/tx/aef997c8b3b32d9244805ee99ba4dd6eb4808fe424c2c6da601934909bebda97#vout=1
+        // https://mempool.space/tx/af99d2ff40bfef5fabeea2b64d3c84fe5e2ae2a13229fdd904f7520daaa9e92f#vout=1
+        // https://mempool.space/tx/885234259164df14a1a110418a2246c80b6528af42779d3fe80da56dd7cd0a58#vout=1
+        // https://mempool.space/tx/3aa339e620e0255f761216fdf207d8d18fd5d67696d6d87d25e377f32ac4fce9#vout=1
+        // https://mempool.space/tx/35212b331df085522eceec0a5212d92db5f29f8e31db8ea393ace655d90e5edf#vout=1
+        // https://mempool.space/tx/8de58c517db1542c5553c96fe1bdab8c08ceb76998cdfb388a4c61ccd1838122#vout=1
+        assert_eq!(stats_925262.tx.tx_spending_ephemeral_dust, 6);
+    }
+
+    #[test]
     fn test_block_888395() {
         let buffer = BufReader::new(File::open("./testdata/888395.json").unwrap());
         let mut de = serde_json::Deserializer::from_reader(buffer);
@@ -1115,6 +1229,7 @@ mod tests {
                 tx_1_input_1_output: 29,
                 tx_1_input_2_output: 8,
                 tx_spending_newly_created_utxos: 9,
+                tx_spending_ephemeral_dust: 0,
                 tx_timelock_height: 6,
                 tx_timelock_timestamp: 1,
                 tx_timelock_not_enforced: 1,
@@ -1352,6 +1467,7 @@ mod tests {
                 tx_1_input_1_output: 112,
                 tx_1_input_2_output: 339,
                 tx_spending_newly_created_utxos: 110,
+                tx_spending_ephemeral_dust: 0,
                 tx_timelock_height: 209,
                 tx_timelock_timestamp: 0,
                 tx_timelock_not_enforced: 22,
@@ -1589,6 +1705,7 @@ mod tests {
                 tx_1_input_1_output: 16,
                 tx_1_input_2_output: 125,
                 tx_spending_newly_created_utxos: 45,
+                tx_spending_ephemeral_dust: 0,
                 tx_timelock_height: 1,
                 tx_timelock_timestamp: 0,
                 tx_timelock_not_enforced: 0,
