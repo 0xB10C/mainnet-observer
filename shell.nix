@@ -14,11 +14,13 @@ pkgs.mkShell {
     pkgs.cargo
     pkgs.rustc
     pkgs.rustfmt
+    pkgs.clippy
     pkgs.sqlite
     pkgs.diesel-cli
 
     # for integration-tests
     pkgs.bitcoind
+    pkgs.bzip2.dev
 
     # frontend
     pkgs.hugo
