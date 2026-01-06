@@ -128,7 +128,7 @@ function formatWithSIPrefix(value, unit="", long = false) {
   ];
   for (let i = 0; i < si.length; i++) {
     if (Math.abs(value) >= si[i].value) {
-      return (value / si[i].value).toFixed(1).replace(/\.0$/, '') + " " + (long ? si[i].name : si[i].symbol) + unit;
+      return (value / si[i].value).toFixed(2).replace(/\.00$/, '').replace(/0$/, '') + " " + (long ? si[i].name : si[i].symbol) + unit;
     }
   }
   return `${value} ${unit}`
