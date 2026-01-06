@@ -164,6 +164,7 @@ diesel::table! {
         outputs_opreturn_coinbase_hathor -> Integer,
         outputs_opreturn_coinbase_witness_commitment -> Integer,
         outputs_opreturn_runestone -> Integer,
+        outputs_opreturn_bytes -> BigInt,
     }
 }
 

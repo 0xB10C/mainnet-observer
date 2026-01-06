@@ -1,5 +1,6 @@
 use bitcoin::{
-    error::UnprefixedHexError, Amount, CompactTarget, Network, Target, Transaction, Txid,
+    error::UnprefixedHexError, script::Instruction, Amount, CompactTarget, Network, Target,
+    Transaction, Txid,
 };
 use bitcoin_pool_identification::{default_data, Pool, PoolIdentification};
 use chrono::DateTime;
@@ -743,6 +744,23 @@ pub struct OutputStats {
     outputs_opreturn_coinbase_hathor: i32,
     outputs_opreturn_coinbase_witness_commitment: i32,
     outputs_opreturn_runestone: i32,
+    outputs_opreturn_bytes: i64,
+}
+
+/// Returns the total size of data pushed in an OP_RETURN script.
+/// Only counts the actual payload bytes (PushBytes), excluding opcodes.
+fn calculate_opreturn_data_size(script: &bitcoin::ScriptBuf) -> usize {
+    if !script.is_op_return() {
+        return 0;
+    }
+
+    let mut total = 0;
+    for inst in script.instructions().flatten() {
+        if let Instruction::PushBytes(bytes) = inst {
+            total += bytes.len();
+        }
+    }
+    total
 }
 
 impl OutputStats {
@@ -754,8 +772,8 @@ impl OutputStats {
         s.date = date;
 
         let mut is_coinbase = true;
-        for (_, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
-            for output in tx_info.output_infos.iter() {
+        for (tx, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
+            for (output_index, output) in tx_info.output_infos.iter().enumerate() {
                 match output.out_type {
                     OutputType::P2pk => {
                         s.outputs_p2pk += 1;
@@ -796,6 +814,12 @@ impl OutputStats {
                     OutputType::OpReturn(flavor) => {
                         s.outputs_opreturn += 1;
                         s.outputs_opreturn_amount += output.value.to_sat() as i64;
+
+                        // Calculate OP_RETURN payload size (only counts PushBytes data)
+                        let script = &tx.output[output_index].script_pub_key.script;
+                        let data_size = calculate_opreturn_data_size(script);
+                        s.outputs_opreturn_bytes += data_size as i64;
+
                         match flavor {
                             OpReturnFlavor::Runestone => s.outputs_opreturn_runestone += 1,
                             OpReturnFlavor::Omni => s.outputs_opreturn_omnilayer += 1,
@@ -1298,6 +1322,7 @@ mod tests {
                 outputs_opreturn_omnilayer: 0,
                 outputs_opreturn_runestone: 13,
                 outputs_opreturn_stacks_block_commit: 0,
+                outputs_opreturn_bytes: 103,
             },
             script: ScriptStats {
                 height: 888395,
@@ -1536,6 +1561,7 @@ mod tests {
                 outputs_opreturn_omnilayer: 0,
                 outputs_opreturn_runestone: 0,
                 outputs_opreturn_stacks_block_commit: 6,
+                outputs_opreturn_bytes: 799,
             },
             script: ScriptStats {
                 height: 739990,
@@ -1774,6 +1800,7 @@ mod tests {
                 outputs_opreturn_omnilayer: 0,
                 outputs_opreturn_runestone: 0,
                 outputs_opreturn_stacks_block_commit: 0,
+                outputs_opreturn_bytes: 0,
             },
             script: ScriptStats {
                 height: 361582,
