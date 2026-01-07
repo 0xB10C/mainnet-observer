@@ -2,7 +2,8 @@ const ANNOTATIONS = [annotationVeriBlock, annotationRunestones]
 const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_7D
 const NAME = "OP_RETURN data bytes"
 const PRECISION = 0
-let START_DATE =  new Date("2014");
+const START_DATE =  new Date("2014");
+const UNIT = "B" // bytes
 
 const CSVs = [
   fetchCSV("/csv/date.csv"),
@@ -19,5 +20,10 @@ function preprocess(input) {
 }
 
 function chartDefinition(d, movingAverage) {
-  return lineChart(d, NAME, movingAverage, PRECISION, START_DATE, ANNOTATIONS, (v) => formatWithSIPrefix(v, "B"));
+  const EXTRA = {
+    tooltip: { trigger: 'axis', valueFormatter: (v) => formatWithSIPrefix(v, UNIT)},
+    yAxis: { axisLabel: {formatter: (v) => formatWithSIPrefix(v, UNIT) } },
+  }
+  const option = lineChart(d, NAME, movingAverage, PRECISION, START_DATE, ANNOTATIONS);
+  return {...option, ...EXTRA};
 }
