@@ -1,5 +1,5 @@
 const ANNOTATIONS = [annotationVeriBlock, annotationRunestones]
-const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_7D
+const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_1D
 const NAME = "OP_RETURN data bytes"
 const PRECISION = 0
 const START_DATE =  new Date("2014");
