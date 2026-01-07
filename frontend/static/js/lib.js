@@ -23,11 +23,12 @@ const annotationTaprootLockedIn = {'text': 'Taproot soft-fork locked-in', 'date'
 const annotationTaprootActivated = {'text': 'Taproot soft-fork activated', 'date': '2021-11-14'}
 const annotationBitcoinCore23 = {'text': 'Bitcoin Core v23 released', 'date': '2022-04-25'}
 const annotationChinaMiningBan = {'text': 'China mining ban', 'date': '2021-05-21'}
-const annotationASICsAvaliable = {'text': 'First ASIC miners avaliable', 'date': '2013-08-01'} 
+const annotationASICsAvaliable = {'text': 'First ASIC miners avaliable', 'date': '2013-08-01'}
 const annotationGPUMinerAvaliable = {'text': 'First GPU miners avaliable', 'date': '2010-07-01'}
 const annotationP2SHActivation = {'text': 'P2SH Activation', 'date': '2012-04-01'}
 const annotationInscriptionsHype = {'text': 'Inscriptions hype', 'date': '2023-04-15'}
 const annotationRunestones = {'text': 'Runestones launch', 'date': '2024-04-21'}
+const annotationVeriBlock = {'text': 'VeriBlock launch', 'date': '2018-09-14'}
 
 const MOVING_AVERAGE_1D = 1
 const MOVING_AVERAGE_7D = 7
@@ -237,11 +238,11 @@ function multiLineChart(d, DATA_KEYS, NAMES, movingAverage, PRECISION, START_DAT
     xAxis: { type: "time" },
     yAxis: { type: 'value' },
     series: zip(NAMES, DATA_KEYS).map(([name, key]) => {
-      return { 
-        name: name, 
-        smooth: false, 
-        type: 'line', 
-        data: zip(d.date, calcMovingAverage(d[key], movingAverage, PRECISION)), 
+      return {
+        name: name,
+        smooth: false,
+        type: 'line',
+        data: zip(d.date, calcMovingAverage(d[key], movingAverage, PRECISION)),
         symbol: "none",
         lineStyle: { width: 2 },
         emphasis: { focus: 'series' }
@@ -299,7 +300,7 @@ function stackedAreaChart(d, DATA_KEYS, NAMES, movingAverage, PRECISION, START_D
 }
 
 // on windown resize, resize the chart
-window.addEventListener("resize", (event) => { 
+window.addEventListener("resize", (event) => {
   if (chart) {
     chart.resize()
   }
