@@ -19,6 +19,11 @@ use crate::rest::{Block, InputData, ScriptPubkeyType};
 const UNKNOWN_POOL_ID: i32 = 0;
 const P2A_DUST_THRESHOLD: u64 = 240;
 
+// The version we want the stats in the database to be and, at
+// the same time also the stats_version we set when generating
+// and writing stats to the database.
+pub const STATS_VERSION: i32 = 1;
+
 #[derive(Debug)]
 pub enum StatsError {
     TxInfoError(rawtx_rs::tx::TxInfoError),
@@ -126,6 +131,10 @@ impl Stats {
 #[diesel(primary_key(height))]
 #[diesel(check_for_backend(diesel::sqlite::Sqlite))]
 pub struct BlockStats {
+    /// The version of stats we have for this block. If the stats version is too
+    /// old, we need to update the stats.
+    pub stats_version: i32,
+
     pub height: i64,
     pub date: String,
 
@@ -207,6 +216,7 @@ impl BlockStats {
         let target = Target::from_compact(CompactTarget::from_unprefixed_hex(&block.bits)?);
 
         Ok(BlockStats {
+            stats_version: STATS_VERSION,
             height: height,
             date: date.to_string(),
             version: block.version.to_consensus(),
@@ -1109,7 +1119,9 @@ impl FeerateStats {
 #[cfg(test)]
 mod tests {
     use crate::rest::Block;
-    use crate::stats::{BlockStats, FeerateStats, InputStats, OutputStats, ScriptStats, TxStats};
+    use crate::stats::{
+        BlockStats, FeerateStats, InputStats, OutputStats, ScriptStats, TxStats, STATS_VERSION,
+    };
     use crate::Stats;
     use serde::Deserialize;
     use std::fs::File;
@@ -1205,6 +1217,7 @@ mod tests {
 
         let expected_stats = Stats {
             block: BlockStats {
+                stats_version: STATS_VERSION,
                 height: 888395,
                 date: "2025-03-18".to_string(),
                 version: 0x24cda000,
@@ -1444,6 +1457,7 @@ mod tests {
 
         let expected_stats = Stats {
             block: BlockStats {
+                stats_version: STATS_VERSION,
                 height: 739990,
                 date: "2022-06-09".to_string(),
                 version: 0x20000000,
@@ -1683,6 +1697,7 @@ mod tests {
 
         let expected_stats = Stats {
             block: BlockStats {
+                stats_version: STATS_VERSION,
                 height: 361582,
                 date: "2015-06-19".to_string(),
                 version: 2,

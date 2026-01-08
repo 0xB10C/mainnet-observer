@@ -25,6 +25,7 @@ diesel::table! {
         difficulty -> BigInt,
         log2_work -> Float,
         block_count -> Integer,
+        stats_version -> Integer,
     }
 }
 
