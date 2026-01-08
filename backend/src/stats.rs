@@ -242,20 +242,12 @@ impl BlockStats {
             weight: block.weight.to_wu() as i64,
             empty: block.txdata.len() == 1,
 
-            coinbase_output_amount: block
-                .txdata
-                .first()
-                .expect("block should have a coinbase tx")
+            coinbase_output_amount: coinbase_tx
                 .output
                 .iter()
                 .map(|o| o.value.to_sat())
                 .sum::<u64>() as i64,
-            coinbase_weight: block
-                .txdata
-                .first()
-                .expect("block should have a coinbase tx")
-                .weight
-                .to_wu() as i64,
+            coinbase_weight: coinbase_tx.weight().to_wu() as i64,
 
             coinbase_locktime_set: coinbase_tx.lock_time != LockTime::ZERO,
             // from https://github.com/bitcoin/bips/blob/master/bip-0054.md:
