@@ -67,6 +67,23 @@ pub fn get_db_block_height(
         .first(conn);
 }
 
+/// Returns block heights that have stats at or above the given version.
+///
+/// Used to identify blocks that are already up-to-date and should be
+/// skipped during re-processing. Blocks NOT in this list need their
+/// stats recalculated (or have yet to be processed)
+pub fn block_heights_greater_equals_version(
+    conn: &mut SqliteConnection,
+    min_version: i32,
+) -> Result<Vec<i64>, diesel::result::Error> {
+    use crate::schema::block_stats::dsl::*;
+
+    block_stats
+        .filter(stats_version.ge(min_version))
+        .select(height)
+        .load::<i64>(conn)
+}
+
 pub fn list_column_names(
     conn: &mut SqliteConnection,
     table: &str,

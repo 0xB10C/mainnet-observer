@@ -10,6 +10,7 @@ use log::{debug, error, info, warn};
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use stats::Stats;
+use std::collections::BTreeSet;
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
 use std::{error, fmt, io, thread};
@@ -136,10 +137,6 @@ pub fn collect_statistics(
     num_threads: usize,
 ) -> Result<(), MainError> {
     let connection = Arc::clone(&connection);
-    let db_height: i64 = {
-        let mut conn = connection.lock().unwrap();
-        db::get_db_block_height(&mut conn)?.unwrap_or_default()
-    };
 
     let client = rest::RestClient::new(rest_host, rest_port);
     let chain_info = match client.chain_info() {
@@ -157,7 +154,37 @@ pub fn collect_statistics(
         error!("The Bitcoin Core node is in initial block download (progress: {:.2}%). Please try again once the IBD is done.", chain_info.verificationprogress*100.0);
         return Err(MainError::IBDNotDone);
     }
+
+    // To determine which blocks to fetch and write to (or override in) the database:
+    // 1. Get the height the node considers to be the tip
     let rest_height = chain_info.blocks;
+    // 2. Substract an reorg margin.
+    let fetch_height = std::cmp::max(0, rest_height - REORG_SAFETY_MARGIN);
+    // 3. Get a list of block heights where our block_stats stats_version is up-to-date
+    //    (i.e. stats are already at the newest version)
+    let uptodate_heights: BTreeSet<i64> = {
+        let mut conn = connection.lock().unwrap();
+        db::block_heights_greater_equals_version(&mut conn, stats::STATS_VERSION)?
+            .iter()
+            .map(|h| *h)
+            .collect()
+    };
+    // 4. Filter out heights that are already up-to-date from all possible heights
+    //    we could fetch.
+    let heights_to_fetch: Vec<i64> = (0..fetch_height as i64)
+        .filter(|h| !uptodate_heights.contains(&h))
+        .collect();
+
+    info!(
+        "Fetching {} blocks (heights min={}, max={})",
+        heights_to_fetch.len(),
+        heights_to_fetch.first().unwrap_or(&0),
+        heights_to_fetch.last().unwrap_or(&0),
+    );
+
+    // TODO: Shuffel the heights around, so each rayon thread gets different heights.
+    // This avoids one thread getting all small, fast to fetch blocks while other
+    // threads need longer to fetch bigger blocks.
 
     let (block_sender, block_receiver) = mpsc::sync_channel(10);
     let (stat_sender, stat_receiver) = mpsc::sync_channel(100);
@@ -170,12 +197,8 @@ pub fn collect_statistics(
             .num_threads(num_threads)
             .build()
             .unwrap();
-        let mut heights: Vec<i64> = (std::cmp::max(db_height + 1, 0)
-            ..std::cmp::max((rest_height - REORG_SAFETY_MARGIN) as i64, 0))
-            .collect();
-        heights.sort();
         pool.install(|| {
-            heights.par_iter()
+            heights_to_fetch.par_iter()
                 .map(|&height| {
                     debug!("get-blocks: getting block at height {}", height);
                     let block = match client.block_at_height(height as u64) {
@@ -291,11 +314,6 @@ pub fn collect_statistics(
         } else {
             info!("collect-statistics: no new blocks to insert.");
         }
-        let db_height = db::get_db_block_height(&mut conn)?.unwrap_or_default();
-        info!(
-            "collect-statistics: database is at height {} with a reorg-safety margin of {}",
-            db_height, REORG_SAFETY_MARGIN,
-        );
         Ok(())
     });
 
