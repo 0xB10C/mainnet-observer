@@ -21,6 +21,6 @@ bitcoin-pool-identification = "0.3.7"
 statrs = "0.18.0"
 
 [dev-dependencies]
-corepc-node = { version = "0.6.1", features = ["28_0", "download"] }
+corepc-node = { version = "0.10", features = ["29_0", "download"] }
 rand = "0.9.0"
 serde_json = "1.0"
