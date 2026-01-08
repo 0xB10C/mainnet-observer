@@ -175,9 +175,10 @@ pub fn collect_statistics(
         .filter(|h| !uptodate_heights.contains(&h))
         .collect();
 
+    let blocks_to_fetch = heights_to_fetch.len();
     info!(
         "Fetching {} blocks (heights min={}, max={})",
-        heights_to_fetch.len(),
+        blocks_to_fetch,
         heights_to_fetch.first().unwrap_or(&0),
         heights_to_fetch.last().unwrap_or(&0),
     );
@@ -270,6 +271,7 @@ pub fn collect_statistics(
         let mut conn = connection.lock().unwrap();
         db::performance_tune(&mut conn)?;
         let mut stat_buffer = Vec::with_capacity(DATABASE_BATCH_SIZE);
+        let mut written = 0;
 
         loop {
             let stat_recv_result = stat_receiver.recv();
@@ -289,16 +291,14 @@ pub fn collect_statistics(
 
             stat_buffer.push(stat);
             if stat_buffer.len() >= DATABASE_BATCH_SIZE {
-                info!(
-                    "writing a batch of {} block-stats to database (max height: {})",
-                    stat_buffer.len(),
-                    stat_buffer
-                        .iter()
-                        .map(|s| s.block.height)
-                        .max()
-                        .unwrap_or_default()
-                );
                 db::insert_stats(&mut conn, &stat_buffer)?;
+                written += stat_buffer.len();
+                info!(
+                    "written {} out of {} block stats to database ({:0.2}%)",
+                    written,
+                    blocks_to_fetch,
+                    (written as f32 / blocks_to_fetch as f32) * 100.0,
+                );
                 stat_buffer.clear();
             }
         }
