@@ -1,6 +1,6 @@
 use bitcoin::{
-    error::UnprefixedHexError, script::Instruction, Amount, CompactTarget, Network, Target,
-    Transaction, Txid,
+    absolute::LockTime, error::UnprefixedHexError, script::Instruction, Amount, CompactTarget,
+    Network, Target, Transaction, Txid,
 };
 use bitcoin_pool_identification::{default_data, Pool, PoolIdentification};
 use chrono::DateTime;
@@ -22,7 +22,11 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // The version we want the stats in the database to be and, at
 // the same time also the stats_version we set when generating
 // and writing stats to the database.
-pub const STATS_VERSION: i32 = 1;
+// History:
+// version 0: default db version
+// version 1: initial version
+// version 2: add coinbase locktime stats
+pub const STATS_VERSION: i32 = 2;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -163,6 +167,12 @@ pub struct BlockStats {
     pub coinbase_output_amount: i64,
     /// Coinbase transactoin weight
     pub coinbase_weight: i64,
+    /// the coinbase locktime has a (non zero) value set. This locktime might not be enforced.
+    pub coinbase_locktime_set: bool,
+    /// The coinbase locktime as a bip54 value set:
+    /// from https://github.com/bitcoin/bips/blob/master/bip-0054.md:
+    /// > The coinbase transaction's nLockTime field must be set to the height of the block minus 1 and its nSequence field must not be equal to 0xffffffff.
+    pub coinbase_locktime_set_bip54: bool,
 
     /// number of transactions in the block
     pub transactions: i32,
@@ -246,6 +256,17 @@ impl BlockStats {
                 .expect("block should have a coinbase tx")
                 .weight
                 .to_wu() as i64,
+
+            coinbase_locktime_set: coinbase_tx.lock_time != LockTime::ZERO,
+            // from https://github.com/bitcoin/bips/blob/master/bip-0054.md:
+            // > The coinbase transaction's nLockTime field must be set to the height of
+            // > the block minus 1 and its nSequence field must not be equal to 0xffffffff.
+            coinbase_locktime_set_bip54: coinbase_tx.lock_time.to_consensus_u32() as i64
+                == height - 1
+                && coinbase_tx
+                    .input
+                    .iter()
+                    .any(|i| i.sequence.enables_absolute_lock_time()),
 
             transactions: block.txdata.len() as i32,
             payments: tx_infos.iter().map(|ti| ti.payments()).sum::<u32>() as i32,
@@ -1232,6 +1253,8 @@ mod tests {
                 empty: false,
                 coinbase_output_amount: 313534642,
                 coinbase_weight: 784,
+                coinbase_locktime_set: true,
+                coinbase_locktime_set_bip54: false,
                 transactions: 74,
                 payments: 74,
                 payments_segwit_spending_tx: 65,
@@ -1472,6 +1495,8 @@ mod tests {
                 empty: false,
                 coinbase_output_amount: 626983001,
                 coinbase_weight: 1272,
+                coinbase_locktime_set: false,
+                coinbase_locktime_set_bip54: false,
                 transactions: 645,
                 payments: 1406,
                 payments_segwit_spending_tx: 1307,
@@ -1712,6 +1737,8 @@ mod tests {
                 empty: false,
                 coinbase_output_amount: 2503687509,
                 coinbase_weight: 408,
+                coinbase_locktime_set: false,
+                coinbase_locktime_set_bip54: false,
                 transactions: 277,
                 payments: 345,
                 payments_segwit_spending_tx: 0,

@@ -25,6 +25,8 @@ diesel::table! {
         difficulty -> BigInt,
         log2_work -> Float,
         block_count -> Integer,
+        coinbase_locktime_set -> Bool,
+        coinbase_locktime_set_bip54 -> Bool,
         stats_version -> Integer,
     }
 }
@@ -233,11 +235,11 @@ diesel::table! {
         tx_1_input_1_output -> Integer,
         tx_1_input_2_output -> Integer,
         tx_spending_newly_created_utxos -> Integer,
-        tx_spending_ephemeral_dust -> Integer,
         tx_timelock_height -> Integer,
         tx_timelock_timestamp -> Integer,
         tx_timelock_not_enforced -> Integer,
         tx_timelock_too_high -> Integer,
+        tx_spending_ephemeral_dust -> Integer,
     }
 }
 
