@@ -209,7 +209,7 @@ pub fn collect_statistics(
                             return Err(MainError::REST(e));
                         }
                     };
-                    if let Err(_) = block_sender.send((height as i64, block)) {
+                    if block_sender.send((height, block)).is_err() {
                         warn!(
                             "during sending block at height {} to stats generator: block receiver dropped",
                             height
@@ -303,7 +303,7 @@ pub fn collect_statistics(
             }
         }
 
-        if stat_buffer.len() > 0 {
+        if !stat_buffer.is_empty() {
             // once the stat_receiver is closed, insert the remaining buffer
             // contents into the database
             info!(

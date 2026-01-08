@@ -251,7 +251,11 @@ pub fn mining_centralization_index_csv(
     info!("Generating {} file...", FILENAME);
 
     let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, FILENAME))?;
-    file.write_all(format!("date,top1,top2,top3,top4,top5,top6,total\n",).as_bytes())?;
+    file.write_all(
+        "date,top1,top2,top3,top4,top5,top6,total\n"
+            .to_string()
+            .as_bytes(),
+    )?;
     let rows = db::mining_centralization_index(&mut conn)?;
     let content: String = rows
         .iter()
@@ -285,7 +289,11 @@ pub fn mining_centralization_index_with_proxy_pools_csv(
     info!("Generating {} file...", FILENAME);
 
     let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, FILENAME))?;
-    file.write_all(format!("date,top1,top2,top3,top4,top5,top6,total\n",).as_bytes())?;
+    file.write_all(
+        "date,top1,top2,top3,top4,top5,top6,total\n"
+            .to_string()
+            .as_bytes(),
+    )?;
     let rows = db::mining_centralization_index_with_proxy_pools(&mut conn)?;
     let content: String = rows
         .iter()
@@ -333,7 +341,7 @@ pub fn mining_pool_blocks_per_day_csv(
         info!("Generating {} file...", filename);
         let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, filename))?;
 
-        file.write_all(format!("date,count,total\n",).as_bytes())?;
+        file.write_all("date,count,total\n".to_string().as_bytes())?;
         let rows = db::get_blocks_per_day_per_pool(&mut conn, *id)?;
         let content: String = rows
             .iter()

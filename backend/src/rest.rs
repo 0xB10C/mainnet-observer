@@ -2,7 +2,6 @@ use bitcoin::{
     self, absolute::LockTime, address::NetworkUnchecked, block, Address, Amount, BlockHash,
     ScriptBuf, Sequence, TxMerkleNode, Weight, Witness,
 };
-use minreq;
 use serde::Deserialize;
 use std::{error, fmt};
 
@@ -24,7 +23,7 @@ pub mod serde_hex {
 
     pub fn deserialize<'de, D: Deserializer<'de>, T: FromHex>(d: D) -> Result<T, D::Error> {
         let hex_str: String = Deserialize::deserialize(d)?;
-        Ok(T::from_hex(&hex_str).map_err(D::Error::custom)?)
+        T::from_hex(&hex_str).map_err(D::Error::custom)
     }
 }
 
@@ -163,7 +162,7 @@ pub struct Block {
 pub enum RestError {
     MinReq(minreq::Error),
     BitcoinDecode(bitcoin::consensus::encode::Error),
-    HTTP(i32, String),
+    Http(i32, String),
 }
 
 impl fmt::Display for RestError {
@@ -171,7 +170,7 @@ impl fmt::Display for RestError {
         match self {
             RestError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
             RestError::BitcoinDecode(e) => write!(f, "Bitcoin decode error: {:?}", e),
-            RestError::HTTP(code, msg) => write!(f, "HTTP error: {} {}", code, msg),
+            RestError::Http(code, msg) => write!(f, "HTTP error: {} {}", code, msg),
         }
     }
 }
@@ -181,7 +180,7 @@ impl error::Error for RestError {
         match *self {
             RestError::MinReq(ref e) => Some(e),
             RestError::BitcoinDecode(ref e) => Some(e),
-            RestError::HTTP(_, _) => None,
+            RestError::Http(_, _) => None,
         }
     }
 }
@@ -210,7 +209,7 @@ impl RestClient {
         let url = format!("http://{}:{}/rest/chaininfo.json", self.host, self.port);
         let response = minreq::get(url).send()?;
         if !(response.status_code == 200 && response.reason_phrase == "OK") {
-            return Err(RestError::HTTP(
+            return Err(RestError::Http(
                 response.status_code,
                 response.reason_phrase,
             ));
@@ -226,7 +225,7 @@ impl RestClient {
         );
         let response_hash = minreq::get(url).send()?;
         if !(response_hash.status_code == 200 && response_hash.reason_phrase == "OK") {
-            return Err(RestError::HTTP(
+            return Err(RestError::Http(
                 response_hash.status_code,
                 response_hash.reason_phrase,
             ));
@@ -240,7 +239,7 @@ impl RestClient {
         );
         let response_block = minreq::get(url).send()?;
         if !(response_block.status_code == 200 && response_block.reason_phrase == "OK") {
-            return Err(RestError::HTTP(
+            return Err(RestError::Http(
                 response_block.status_code,
                 response_block.reason_phrase,
             ));

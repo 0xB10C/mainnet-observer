@@ -30,19 +30,19 @@ pub const STATS_VERSION: i32 = 2;
 
 #[derive(Debug)]
 pub enum StatsError {
-    TxInfoError(rawtx_rs::tx::TxInfoError),
-    BitcoinEncodeError(bitcoin::consensus::encode::Error),
-    ParseIntError(ParseIntError),
-    UnprefixedHexError(UnprefixedHexError),
+    TxInfo(rawtx_rs::tx::TxInfoError),
+    BitcoinEncode(bitcoin::consensus::encode::Error),
+    ParseInt(ParseIntError),
+    UnprefixedHex(UnprefixedHexError),
 }
 
 impl fmt::Display for StatsError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            StatsError::TxInfoError(e) => write!(f, "Bitcoin Script Error: {:?}", e),
-            StatsError::BitcoinEncodeError(e) => write!(f, "Bitcoin Encode Error: {:?}", e),
-            StatsError::ParseIntError(e) => write!(f, "Parse Int Error: {:?}", e),
-            StatsError::UnprefixedHexError(e) => write!(f, "Unprefixed Hex Error: {:?}", e),
+            StatsError::TxInfo(e) => write!(f, "Bitcoin Script Error: {:?}", e),
+            StatsError::BitcoinEncode(e) => write!(f, "Bitcoin Encode Error: {:?}", e),
+            StatsError::ParseInt(e) => write!(f, "Parse Int Error: {:?}", e),
+            StatsError::UnprefixedHex(e) => write!(f, "Unprefixed Hex Error: {:?}", e),
         }
     }
 }
@@ -50,35 +50,35 @@ impl fmt::Display for StatsError {
 impl error::Error for StatsError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            StatsError::TxInfoError(ref e) => Some(e),
-            StatsError::BitcoinEncodeError(ref e) => Some(e),
-            StatsError::ParseIntError(ref e) => Some(e),
-            StatsError::UnprefixedHexError(ref e) => Some(e),
+            StatsError::TxInfo(ref e) => Some(e),
+            StatsError::BitcoinEncode(ref e) => Some(e),
+            StatsError::ParseInt(ref e) => Some(e),
+            StatsError::UnprefixedHex(ref e) => Some(e),
         }
     }
 }
 
 impl From<rawtx_rs::tx::TxInfoError> for StatsError {
     fn from(e: rawtx_rs::tx::TxInfoError) -> Self {
-        StatsError::TxInfoError(e)
+        StatsError::TxInfo(e)
     }
 }
 
 impl From<bitcoin::consensus::encode::Error> for StatsError {
     fn from(e: bitcoin::consensus::encode::Error) -> Self {
-        StatsError::BitcoinEncodeError(e)
+        StatsError::BitcoinEncode(e)
     }
 }
 
 impl From<ParseIntError> for StatsError {
     fn from(e: ParseIntError) -> Self {
-        StatsError::ParseIntError(e)
+        StatsError::ParseInt(e)
     }
 }
 
 impl From<UnprefixedHexError> for StatsError {
     fn from(e: UnprefixedHexError) -> Self {
-        StatsError::UnprefixedHexError(e)
+        StatsError::UnprefixedHex(e)
     }
 }
 
@@ -109,7 +109,7 @@ impl Stats {
                         block.height,
                         e
                     );
-                    return Err(StatsError::TxInfoError(e));
+                    return Err(StatsError::TxInfo(e));
                 }
             }
         }
@@ -198,7 +198,7 @@ impl BlockStats {
     pub fn from_block(
         block: &Block,
         date: String,
-        tx_infos: &Vec<TxInfo>,
+        tx_infos: &[TxInfo],
         pools: &[Pool],
     ) -> Result<BlockStats, StatsError> {
         let height = block.height;
@@ -209,7 +209,7 @@ impl BlockStats {
                 .expect("block should have a coinbase tx")
                 .raw,
         )?;
-        let pool_id: i32 = match coinbase_tx.identify_pool(Network::Bitcoin, &pools) {
+        let pool_id: i32 = match coinbase_tx.identify_pool(Network::Bitcoin, pools) {
             Some(result) => {
                 debug!(
                     "Identified pool '{}' at height {} with method '{:?}'",
@@ -227,7 +227,7 @@ impl BlockStats {
 
         Ok(BlockStats {
             stats_version: STATS_VERSION,
-            height: height,
+            height,
             date: date.to_string(),
             version: block.version.to_consensus(),
             nonce: block.nonce as i32,
@@ -329,7 +329,7 @@ pub struct TxStats {
 }
 
 impl TxStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &Vec<TxInfo>) -> TxStats {
+    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> TxStats {
         let height = block.height;
         let mut s = TxStats::default();
 
@@ -462,7 +462,7 @@ impl TxStats {
             }
         }
 
-        return s;
+        s
     }
 }
 
@@ -514,12 +514,13 @@ pub struct ScriptStats {
 }
 
 impl ScriptStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &Vec<TxInfo>) -> ScriptStats {
+    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> ScriptStats {
         let height = block.height;
-        let mut s = ScriptStats::default();
-
-        s.height = height;
-        s.date = date;
+        let mut s = Self {
+            height,
+            date,
+            ..Default::default()
+        };
 
         for (_, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
             for input in tx_info.input_infos.iter() {
@@ -653,13 +654,15 @@ pub struct InputStats {
 }
 
 impl InputStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &Vec<TxInfo>) -> InputStats {
+    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> InputStats {
         let height = block.height;
         let txids_in_this_block: HashSet<Txid> = block.txdata.iter().map(|tx| tx.txid).collect();
 
-        let mut s = InputStats::default();
-        s.height = height;
-        s.date = date;
+        let mut s = Self {
+            height,
+            date,
+            ..Default::default()
+        };
 
         for (tx, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
             for input in tx_info.input_infos.iter() {
@@ -787,12 +790,13 @@ fn calculate_opreturn_data_size(script: &bitcoin::ScriptBuf) -> usize {
 }
 
 impl OutputStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &Vec<TxInfo>) -> OutputStats {
+    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> OutputStats {
         let height = block.height;
-        let mut s = OutputStats::default();
-
-        s.height = height;
-        s.date = date;
+        let mut s = Self {
+            height,
+            date,
+            ..Default::default()
+        };
 
         let mut is_coinbase = true;
         for (tx, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
@@ -973,7 +977,7 @@ fn f64_nan_as_0(a: f64) -> f64 {
 }
 
 impl FeerateStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &Vec<TxInfo>) -> FeerateStats {
+    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> FeerateStats {
         let num_tx_without_coinbase = block.txdata.len() - 1;
 
         let mut fees_sat = Vec::with_capacity(num_tx_without_coinbase);
@@ -1053,7 +1057,7 @@ impl FeerateStats {
 
         FeerateStats {
             height: block.height,
-            date: date,
+            date,
             fee_min: *(fees_sat.iter().min().unwrap_or(&0)) as i64,
             fee_5th_percentile: fees_data.percentile(5) as i64,
             fee_10th_percentile: fees_data.percentile(10) as i64,
