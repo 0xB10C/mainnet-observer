@@ -1,0 +1,21 @@
+name: Common setup for propagation-observer ubuntu-based workflows
+description: Install dependencies and setup Rust cache
+
+runs:
+  using: composite
+  steps:
+    - name: Install build dependecies
+      shell: bash
+      run: sudo apt update -y
+      # nothing else yet
+
+    - name: Cache cargo
+      uses: actions/cache@v3
+      with:
+        path: |
+          ~/.cargo/registry
+          ~/.cargo/git
+          target
+        key: ${{ runner.os }}-ubuntu-cargo-${{ hashFiles('**/Cargo.lock') }}
+        restore-keys: |
+          ${{ runner.os }}-ubuntu-cargo-
