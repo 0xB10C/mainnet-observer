@@ -27,7 +27,7 @@ fn setup_node() -> corepc_node::Node {
     }
 
     info!("Trying to download a bitcoind..");
-    return corepc_node::Node::from_downloaded_with_conf(&conf).unwrap();
+    corepc_node::Node::from_downloaded_with_conf(&conf).unwrap()
 }
 
 fn setup_chain(node: &corepc_node::Node, blocks: usize) {
@@ -37,7 +37,7 @@ fn setup_chain(node: &corepc_node::Node, blocks: usize) {
         .expect("failed to get new address");
     let json = node
         .client
-        .generate_to_address(blocks as usize, &address)
+        .generate_to_address(blocks, &address)
         .expect("generatetoaddress");
     json.into_model().unwrap();
     assert_eq!(
@@ -61,7 +61,7 @@ fn rest_host_and_port(node: &corepc_node::Node) -> (String, u16) {
         .expect("should be able to extract a rpc_port from the rpc_url")
         .parse::<u16>()
         .expect("port part should be an u16");
-    return (rest_host, rest_port);
+    (rest_host, rest_port)
 }
 
 fn setup_db() -> Arc<Mutex<SqliteConnection>> {
@@ -121,5 +121,5 @@ fn test_integration_minimal() {
 
     // cleanup
     fs::remove_dir_all(&dir).unwrap();
-    assert_eq!(failed, false);
+    assert!(!failed);
 }

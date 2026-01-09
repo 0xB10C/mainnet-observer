@@ -166,13 +166,13 @@ pub fn collect_statistics(
         let mut conn = connection.lock().unwrap();
         db::block_heights_greater_equals_version(&mut conn, stats::STATS_VERSION)?
             .iter()
-            .map(|h| *h)
+            .copied()
             .collect()
     };
     // 4. Filter out heights that are already up-to-date from all possible heights
     //    we could fetch.
     let heights_to_fetch: Vec<i64> = (0..fetch_height as i64)
-        .filter(|h| !uptodate_heights.contains(&h))
+        .filter(|h| !uptodate_heights.contains(h))
         .collect();
 
     let blocks_to_fetch = heights_to_fetch.len();
