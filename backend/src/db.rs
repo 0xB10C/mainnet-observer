@@ -329,6 +329,45 @@ pub fn mining_centralization_index_with_proxy_pools(
 }
 
 #[derive(QueryableByName)]
+pub struct PoolsMiningEphemeralDust {
+    #[diesel(sql_type = BigInt)]
+    pub pool_id: i64,
+    #[diesel(sql_type = BigInt)]
+    pub count: i64,
+    #[diesel(sql_type = BigInt)]
+    pub first_ephemeral_dust_height: i64,
+    #[diesel(sql_type = Text)]
+    pub first_ephemeral_dust_date: String,
+}
+
+pub fn get_pools_mining_ephemeral_dust(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<PoolsMiningEphemeralDust>, diesel::result::Error> {
+    sql_query(
+    r#"
+        SELECT
+            t.pool_id,
+            COUNT(t.tx_spending_ephemeral_dust) as count,
+            MIN(CASE WHEN t.tx_spending_ephemeral_dust > 0 THEN t.height END) AS first_ephemeral_dust_height,
+            MIN(CASE WHEN t.tx_spending_ephemeral_dust > 0 THEN t.date END) AS first_ephemeral_dust_date
+        FROM (
+            SELECT
+                bs.date,
+                bs.height,
+                ts.tx_spending_ephemeral_dust,
+                bs.pool_id
+            FROM tx_stats ts
+            JOIN block_stats bs ON ts.height = bs.height
+            WHERE ts.tx_spending_ephemeral_dust > 0
+        ) t
+        GROUP BY t.pool_id
+        ORDER BY first_ephemeral_dust_date;
+    "#,
+    )
+    .get_results(conn)
+}
+
+#[derive(QueryableByName)]
 pub struct PoolBlockPerDay {
     #[diesel(sql_type = Text)]
     pub date: String,

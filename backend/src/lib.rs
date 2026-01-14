@@ -341,5 +341,6 @@ pub fn write_csv_files(
     gen_csv::mining_centralization_index_csv(csv_path, connection.clone())?;
     gen_csv::mining_centralization_index_with_proxy_pools_csv(csv_path, connection.clone())?;
     gen_csv::mining_pool_blocks_per_day_csv(csv_path, connection.clone())?;
+    gen_csv::pools_mining_ephemeral_dust_csv(csv_path, connection.clone())?;
     Ok(())
 }

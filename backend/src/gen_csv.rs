@@ -2,7 +2,7 @@ use crate::{db, db::TableInfo, MainError};
 use bitcoin::Network;
 use diesel::SqliteConnection;
 use log::info;
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::sync::{Arc, Mutex};
 
@@ -270,6 +270,43 @@ pub fn mining_centralization_index_csv(
                 row.top5_count,
                 row.top6_count,
                 row.total_blocks
+            )
+        })
+        .collect();
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
+// Generates a pools-mining-ephemeral-dust.csv file.
+pub fn pools_mining_ephemeral_dust_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+) -> Result<(), MainError> {
+    const FILENAME: &str = "miningpools-mining-ephemeral-dust";
+
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating {} file...", FILENAME);
+
+    let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, FILENAME))?;
+    file.write_all("pool,height,date,total\n".to_string().as_bytes())?;
+
+    let pool_data = bitcoin_pool_identification::default_data(Network::Bitcoin);
+    let pool_names: BTreeMap<u64, String> =
+        pool_data.iter().map(|p| (p.id, p.name.clone())).collect();
+
+    let rows = db::get_pools_mining_ephemeral_dust(&mut conn)?;
+    let content: String = rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{},{},{},{}\n",
+                pool_names
+                    .get(&(row.pool_id as u64))
+                    .unwrap_or(&row.pool_id.to_string()),
+                row.first_ephemeral_dust_height,
+                row.first_ephemeral_dust_date,
+                row.count,
             )
         })
         .collect();
