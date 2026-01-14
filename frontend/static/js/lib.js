@@ -217,6 +217,46 @@ function areaPercentageChart(d, NAME, movingAverage, PRECISION, START_DATE, ANNO
   }
 }
 
+// this is not a chart, but a table
+function table(data) {
+  const table = document.createElement('table');
+  table.classList.add("table")
+  const thead = document.createElement('thead');
+  const trHead = document.createElement('tr');
+
+  data.header.forEach(h => {
+    const th = document.createElement('th');
+    th.textContent = h;
+    trHead.appendChild(th);
+  });
+  thead.appendChild(trHead);
+  table.appendChild(thead);
+
+  const tbody = document.createElement('tbody');
+  data.rows.forEach(row => {
+    const tr = document.createElement('tr');
+    Object.values(row).forEach(val => {
+      const td = document.createElement('td');
+      td.textContent = val;
+      tr.appendChild(td);
+    });
+    tbody.appendChild(tr);
+  });
+  table.appendChild(tbody);
+
+  const container = document.getElementById('chart');
+  container.appendChild(table);
+
+  // HACK: drop the movingAverage selector, as we don't need it for tables
+  document.getElementById('maSelector').parentNode.remove();
+
+  // HACK: Don't use a pre-defined height for tables
+  document.getElementById('chart').style.height = null;
+
+  // inidcates to the caller that this isn't a chart
+  return null;
+}
+
 // double line chart
 // expects date, y1 and y2
 function doubleLineChart(d, NAMES, movingAverage, PRECISION, START_DATE, ANNOTATIONS = []) {
@@ -340,6 +380,10 @@ window.onload = function () {
   Promise.all(CSVs).then(function(data) {
     processedData = preprocess(data)
     let option = chartDefinition(processedData, currentMovingAverage)
+    // For e.g. tables, as we don't want to draw them as charts
+    if (option === null) {
+      return
+    }
     draw(option)
 
     const paramsString = window.location.search;
