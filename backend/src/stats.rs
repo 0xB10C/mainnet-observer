@@ -26,7 +26,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 0: default db version
 // version 1: initial version
 // version 2: add coinbase locktime stats
-pub const STATS_VERSION: i32 = 2;
+// version 3: add coinbase output stats
+pub const STATS_VERSION: i32 = 3;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -771,6 +772,17 @@ pub struct OutputStats {
     outputs_opreturn_coinbase_witness_commitment: i32,
     outputs_opreturn_runestone: i32,
     outputs_opreturn_bytes: i64,
+
+    outputs_coinbase: i32,
+    outputs_coinbase_p2pk: i32,
+    outputs_coinbase_p2pkh: i32,
+    outputs_coinbase_p2wpkh: i32,
+    outputs_coinbase_p2ms: i32,
+    outputs_coinbase_p2sh: i32,
+    outputs_coinbase_p2wsh: i32,
+    outputs_coinbase_p2tr: i32,
+    outputs_coinbase_opreturn: i32,
+    outputs_coinbase_unknown: i32,
 }
 
 /// Returns the total size of data pushed in an OP_RETURN script.
@@ -800,35 +812,59 @@ impl OutputStats {
 
         let mut is_coinbase = true;
         for (tx, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
+            if is_coinbase {
+                s.outputs_coinbase += tx.output.len() as i32;
+            }
             for (output_index, output) in tx_info.output_infos.iter().enumerate() {
                 match output.out_type {
                     OutputType::P2pk => {
                         s.outputs_p2pk += 1;
                         s.outputs_p2pk_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2pk += 1;
+                        }
                     }
                     OutputType::P2pkh => {
                         s.outputs_p2pkh += 1;
                         s.outputs_p2pkh_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2pkh += 1;
+                        }
                     }
                     OutputType::P2wpkhV0 => {
                         s.outputs_p2wpkh += 1;
                         s.outputs_p2wpkh_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2wpkh += 1;
+                        }
                     }
                     OutputType::P2ms => {
                         s.outputs_p2ms += 1;
                         s.outputs_p2ms_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2ms += 1;
+                        }
                     }
                     OutputType::P2sh => {
                         s.outputs_p2sh += 1;
                         s.outputs_p2sh_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2sh += 1;
+                        }
                     }
                     OutputType::P2wshV0 => {
                         s.outputs_p2wsh += 1;
                         s.outputs_p2wsh_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2wsh += 1;
+                        }
                     }
                     OutputType::P2tr => {
                         s.outputs_p2tr += 1;
                         s.outputs_p2tr_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_p2tr += 1;
+                        }
                     }
                     OutputType::P2a => {
                         s.outputs_p2a += 1;
@@ -841,6 +877,9 @@ impl OutputStats {
                     OutputType::OpReturn(flavor) => {
                         s.outputs_opreturn += 1;
                         s.outputs_opreturn_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_opreturn += 1;
+                        }
 
                         // Calculate OP_RETURN payload size (only counts PushBytes data)
                         let script = &tx.output[output_index].script_pub_key.script;
@@ -883,6 +922,9 @@ impl OutputStats {
                     OutputType::Unknown => {
                         s.outputs_unknown += 1;
                         s.outputs_unknown_amount += output.value.to_sat() as i64;
+                        if is_coinbase {
+                            s.outputs_coinbase_unknown += 1;
+                        }
                     }
                 }
             }
@@ -1355,6 +1397,16 @@ mod tests {
                 outputs_opreturn_runestone: 13,
                 outputs_opreturn_stacks_block_commit: 0,
                 outputs_opreturn_bytes: 103,
+                outputs_coinbase: 2,
+                outputs_coinbase_p2pk: 0,
+                outputs_coinbase_p2pkh: 1,
+                outputs_coinbase_p2wpkh: 0,
+                outputs_coinbase_p2ms: 0,
+                outputs_coinbase_p2sh: 0,
+                outputs_coinbase_p2wsh: 0,
+                outputs_coinbase_p2tr: 0,
+                outputs_coinbase_opreturn: 1,
+                outputs_coinbase_unknown: 0,
             },
             script: ScriptStats {
                 height: 888395,
@@ -1597,6 +1649,16 @@ mod tests {
                 outputs_opreturn_runestone: 0,
                 outputs_opreturn_stacks_block_commit: 6,
                 outputs_opreturn_bytes: 799,
+                outputs_coinbase: 4,
+                outputs_coinbase_p2pk: 0,
+                outputs_coinbase_p2pkh: 0,
+                outputs_coinbase_p2wpkh: 0,
+                outputs_coinbase_p2ms: 0,
+                outputs_coinbase_p2sh: 1,
+                outputs_coinbase_p2wsh: 0,
+                outputs_coinbase_p2tr: 0,
+                outputs_coinbase_opreturn: 3,
+                outputs_coinbase_unknown: 0,
             },
             script: ScriptStats {
                 height: 739990,
@@ -1839,6 +1901,16 @@ mod tests {
                 outputs_opreturn_runestone: 0,
                 outputs_opreturn_stacks_block_commit: 0,
                 outputs_opreturn_bytes: 0,
+                outputs_coinbase: 1,
+                outputs_coinbase_p2pk: 0,
+                outputs_coinbase_p2pkh: 1,
+                outputs_coinbase_p2wpkh: 0,
+                outputs_coinbase_p2ms: 0,
+                outputs_coinbase_p2sh: 0,
+                outputs_coinbase_p2wsh: 0,
+                outputs_coinbase_p2tr: 0,
+                outputs_coinbase_opreturn: 0,
+                outputs_coinbase_unknown: 0,
             },
             script: ScriptStats {
                 height: 361582,

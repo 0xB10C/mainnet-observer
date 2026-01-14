@@ -168,6 +168,16 @@ diesel::table! {
         outputs_opreturn_coinbase_witness_commitment -> Integer,
         outputs_opreturn_runestone -> Integer,
         outputs_opreturn_bytes -> BigInt,
+        outputs_coinbase -> Integer,
+        outputs_coinbase_p2pk -> Integer,
+        outputs_coinbase_p2pkh -> Integer,
+        outputs_coinbase_p2wpkh -> Integer,
+        outputs_coinbase_p2ms -> Integer,
+        outputs_coinbase_p2sh -> Integer,
+        outputs_coinbase_p2wsh -> Integer,
+        outputs_coinbase_p2tr -> Integer,
+        outputs_coinbase_opreturn -> Integer,
+        outputs_coinbase_unknown -> Integer,
     }
 }
 
