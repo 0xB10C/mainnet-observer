@@ -6,7 +6,7 @@ use crate::stats::{
 use crate::MainError;
 use diesel::prelude::*;
 use diesel::sql_query;
-use diesel::sql_types::{BigInt, Float, Integer, Text};
+use diesel::sql_types::{BigInt, Float, Integer, Nullable, Text};
 use diesel::sqlite::SqliteConnection;
 use diesel_migrations::{embed_migrations, EmbeddedMigrations, MigrationHarness};
 use log::{debug, info};
@@ -362,6 +362,56 @@ pub fn get_pools_mining_ephemeral_dust(
         ) t
         GROUP BY t.pool_id
         ORDER BY first_ephemeral_dust_date;
+    "#,
+    )
+    .get_results(conn)
+}
+
+#[derive(QueryableByName)]
+pub struct PoolsMiningP2A {
+    #[diesel(sql_type = BigInt)]
+    pub pool_id: i64,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub first_p2a_input_height: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub first_p2a_input_date: Option<String>,
+    #[diesel(sql_type = Nullable<BigInt>)]
+    pub first_p2a_output_height: Option<i64>,
+    #[diesel(sql_type = Nullable<Text>)]
+    pub first_p2a_output_date: Option<String>,
+    #[diesel(sql_type = BigInt)]
+    pub total_inputs: i64,
+    #[diesel(sql_type = BigInt)]
+    pub total_outputs: i64,
+}
+
+pub fn get_pools_mining_p2a(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<PoolsMiningP2A>, diesel::result::Error> {
+    sql_query(
+        r#"
+    SELECT
+        t.pool_id,
+        MIN(CASE WHEN t.inputs_p2a > 0 THEN t.height END) AS first_p2a_input_height,
+        MIN(CASE WHEN t.inputs_p2a > 0 THEN t.date END) AS first_p2a_input_date,
+        MIN(CASE WHEN t.outputs_p2a > 0 THEN t.height END) AS first_p2a_output_height,
+        MIN(CASE WHEN t.outputs_p2a > 0 THEN t.date END) AS first_p2a_output_date,
+        SUM(t.inputs_p2a)  AS total_inputs,
+        SUM(t.outputs_p2a) AS total_outputs
+    FROM (
+        SELECT
+            bs.date,
+            bs.height,
+            is2.inputs_p2a,
+            os.outputs_p2a,
+            bs.pool_id
+        FROM input_stats  is2
+        JOIN block_stats  bs ON is2.height = bs.height
+        JOIN output_stats os ON is2.height = os.height
+        WHERE is2.inputs_p2a > 0 OR os.outputs_p2a > 0
+    ) t
+    GROUP BY t.pool_id
+    ORDER BY first_p2a_input_date NULLS LAST;
     "#,
     )
     .get_results(conn)

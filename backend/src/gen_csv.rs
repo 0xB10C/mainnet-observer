@@ -314,6 +314,66 @@ pub fn pools_mining_ephemeral_dust_csv(
     Ok(())
 }
 
+// Generates a pools-mining-p2a.csv file.
+pub fn pools_mining_p2a_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+) -> Result<(), MainError> {
+    const FILENAME: &str = "miningpools-mining-p2a";
+
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating {} file...", FILENAME);
+
+    let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, FILENAME))?;
+    file.write_all(
+        "pool,first spend,first creation,total inputs, total outputs\n"
+            .to_string()
+            .as_bytes(),
+    )?;
+
+    let pool_data = bitcoin_pool_identification::default_data(Network::Bitcoin);
+    let pool_names: BTreeMap<u64, String> =
+        pool_data.iter().map(|p| (p.id, p.name.clone())).collect();
+
+    let rows = db::get_pools_mining_p2a(&mut conn)?;
+    let content: String = rows
+        .iter()
+        .map(|row| {
+            let input_date_string = match row.first_p2a_input_height {
+                Some(h) => format!(
+                    "{} ({})",
+                    h,
+                    row.first_p2a_input_date.clone().unwrap_or_default()
+                ),
+                None => "-".to_string(),
+            };
+
+            let output_date_string = match row.first_p2a_output_height {
+                Some(h) => format!(
+                    "{} ({})",
+                    h,
+                    row.first_p2a_output_date.clone().unwrap_or_default()
+                ),
+                None => "-".to_string(),
+            };
+
+            format!(
+                "{},{},{},{},{}\n",
+                pool_names
+                    .get(&(row.pool_id as u64))
+                    .unwrap_or(&row.pool_id.to_string()),
+                input_date_string,
+                output_date_string,
+                row.total_inputs,
+                row.total_outputs,
+            )
+        })
+        .collect();
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
 // Generates a miningpools-centralization-index-with-proxy-pools.csv file.
 pub fn mining_centralization_index_with_proxy_pools_csv(
     csv_path: &str,
