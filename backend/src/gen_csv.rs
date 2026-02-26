@@ -314,6 +314,43 @@ pub fn pools_mining_ephemeral_dust_csv(
     Ok(())
 }
 
+// Generates a pools-mining-bip54-coinbase.csv file.
+pub fn pools_mining_bip54_coinbase_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+) -> Result<(), MainError> {
+    const FILENAME: &str = "miningpools-mining-bip54-coinbase";
+
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating {} file...", FILENAME);
+
+    let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, FILENAME))?;
+    file.write_all("pool,height,date,total\n".to_string().as_bytes())?;
+
+    let pool_data = bitcoin_pool_identification::default_data(Network::Bitcoin);
+    let pool_names: BTreeMap<u64, String> =
+        pool_data.iter().map(|p| (p.id, p.name.clone())).collect();
+
+    let rows = db::get_pools_mining_bip54_coinbase(&mut conn)?;
+    let content: String = rows
+        .iter()
+        .map(|row| {
+            format!(
+                "{},{},{},{}\n",
+                pool_names
+                    .get(&(row.pool_id as u64))
+                    .unwrap_or(&row.pool_id.to_string()),
+                row.first_bip54_coibnase_height,
+                row.first_bip54_coibnase_date,
+                row.count,
+            )
+        })
+        .collect();
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
 // Generates a pools-mining-p2a.csv file.
 pub fn pools_mining_p2a_csv(
     csv_path: &str,

@@ -368,6 +368,44 @@ pub fn get_pools_mining_ephemeral_dust(
 }
 
 #[derive(QueryableByName)]
+pub struct PoolsMiningBIP54Coinbase {
+    #[diesel(sql_type = BigInt)]
+    pub pool_id: i64,
+    #[diesel(sql_type = BigInt)]
+    pub count: i64,
+    #[diesel(sql_type = BigInt)]
+    pub first_bip54_coibnase_height: i64,
+    #[diesel(sql_type = Text)]
+    pub first_bip54_coibnase_date: String,
+}
+
+pub fn get_pools_mining_bip54_coinbase(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<PoolsMiningBIP54Coinbase>, diesel::result::Error> {
+    sql_query(
+    r#"
+        SELECT
+            t.pool_id,
+            COUNT(t.coinbase_locktime_set_bip54) as count,
+            MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.height END) AS first_bip54_coibnase_height,
+            MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.date END) AS first_bip54_coibnase_date
+        FROM (
+            SELECT
+                bs.date,
+                bs.height,
+                bs.coinbase_locktime_set_bip54,
+                bs.pool_id
+            FROM block_stats bs
+            WHERE bs.coinbase_locktime_set_bip54 > 0
+        ) t
+        GROUP BY t.pool_id
+        ORDER BY first_bip54_coibnase_date;
+    "#,
+    )
+    .get_results(conn)
+}
+
+#[derive(QueryableByName)]
 pub struct PoolsMiningP2A {
     #[diesel(sql_type = BigInt)]
     pub pool_id: i64,
