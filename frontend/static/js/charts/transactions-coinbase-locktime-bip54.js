@@ -2,8 +2,7 @@ const ANNOTATIONS = []
 const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_7D
 const NAME = "BIP54 locktime set"
 const PRECISION = 2
-let START_DATE =  new Date();
-START_DATE.setFullYear(2020);
+let START_DATE =  new Date("2026-01-01");
 
 const CSVs = [
   fetchCSV("/csv/date.csv"),
