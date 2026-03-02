@@ -96,6 +96,34 @@ pub fn metrics_csv(
     Ok(())
 }
 
+pub fn coinbase_subsidy_and_fees_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+) -> Result<(), MainError> {
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating coinbase subsidy and fees CSV files...");
+    let rows = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn);
+
+    let mut subsidy_file = std::fs::File::create(format!("{}/coinbase_subsidy_avg.csv", csv_path))?;
+    subsidy_file.write_all("coinbase_subsidy_avg\n".as_bytes())?;
+    let subsidy_content: String = rows
+        .iter()
+        .map(|r| format!("{:.4}\n", r.subsidy_avg))
+        .collect();
+    subsidy_file.write_all(subsidy_content.as_bytes())?;
+
+    let mut fees_file = std::fs::File::create(format!("{}/coinbase_fees_avg.csv", csv_path))?;
+    fees_file.write_all("coinbase_fees_avg\n".as_bytes())?;
+    let fees_content: String = rows
+        .iter()
+        .map(|r| format!("{:.4}\n", r.fees_avg))
+        .collect();
+    fees_file.write_all(fees_content.as_bytes())?;
+
+    Ok(())
+}
+
 // Generates a top5_miningpools.csv file with the current top5 pools and their blocks
 // per day along with the total daily blocks.
 pub fn top5_miningpools_csv(

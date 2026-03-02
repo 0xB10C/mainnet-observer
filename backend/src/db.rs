@@ -37,6 +37,14 @@ pub struct DateColumn {
     pub date: String,
 }
 
+#[derive(Debug, QueryableByName)]
+pub struct SubsidyAndFees {
+    #[diesel(sql_type = Float)]
+    pub subsidy_avg: f32,
+    #[diesel(sql_type = Float)]
+    pub fees_avg: f32,
+}
+
 pub fn open_db_and_run_migrations(database_path: &str) -> Result<SqliteConnection, MainError> {
     debug!("trying to open database: {}", database_path);
     let mut conn = SqliteConnection::establish(database_path)?;
@@ -100,6 +108,17 @@ pub fn column_sum_and_avg_by_date(
         "SELECT avg({}) as avg, sum({}) as sum FROM {} GROUP BY date",
         colname, colname, table
     ))
+    .get_results(conn)
+    .unwrap()
+}
+
+pub fn coinbase_subsidy_and_fees_avg_by_date(conn: &mut SqliteConnection) -> Vec<SubsidyAndFees> {
+    sql_query(
+        "SELECT \
+         avg(5000000000 >> (height / 210000)) as subsidy_avg, \
+         avg(coinbase_output_amount - (5000000000 >> (height / 210000))) as fees_avg \
+         FROM block_stats GROUP BY date",
+    )
     .get_results(conn)
     .unwrap()
 }
