@@ -561,7 +561,7 @@ fn insert_input_stats(
     use crate::schema::input_stats;
     debug!("Inserting a batch of {} input stats", stats.len());
 
-    diesel::insert_into(input_stats::table)
+    diesel::replace_into(input_stats::table)
         .values(stats)
         .execute(conn)?;
     Ok(())
