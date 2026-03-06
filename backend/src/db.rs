@@ -484,6 +484,34 @@ pub struct PoolBlockPerDay {
     pub total: i64,
 }
 
+/// Returns the number of blocks per day where a specific version bit is set.
+/// The block version is a u32 in the Bitcoin protocol but stored as a signed
+/// integer in SQLite. Using `!= 0` against a single-bit mask avoids any
+/// signed/unsigned ambiguity since the bit mask is always a small positive value.
+pub fn blocks_signaling_version_bit_per_day(
+    conn: &mut SqliteConnection,
+    bit: u8,
+) -> Result<Vec<i64>, diesel::result::Error> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = BigInt)]
+        signaling_count: i64,
+    }
+
+    let bit_mask: u32 = 1 << bit;
+    let rows: Vec<Row> = sql_query(format!(
+        r#"
+        SELECT
+            SUM(CASE WHEN (version & {bit_mask}) != 0 THEN 1 ELSE 0 END) AS signaling_count
+        FROM block_stats
+        GROUP BY date
+        ORDER BY date;
+        "#,
+    ))
+    .get_results(conn)?;
+    Ok(rows.into_iter().map(|r| r.signaling_count).collect())
+}
+
 pub fn get_blocks_per_day_per_pool(
     conn: &mut SqliteConnection,
     id: i32,

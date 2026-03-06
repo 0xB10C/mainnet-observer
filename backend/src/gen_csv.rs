@@ -477,6 +477,27 @@ pub fn mining_centralization_index_with_proxy_pools_csv(
     Ok(())
 }
 
+// Generates a CSV file with the number of blocks per day signaling a given BIP9 version bit.
+pub fn version_bit_signaling_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+    filename: &str,
+    column_name: &str,
+    bit: u8,
+) -> Result<(), MainError> {
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating {}.csv file...", filename);
+
+    let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, filename))?;
+    file.write_all(format!("{}\n", column_name).as_bytes())?;
+
+    let rows = db::blocks_signaling_version_bit_per_day(&mut conn, bit)?;
+    let content: String = rows.iter().map(|count| format!("{}\n", count)).collect();
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
 // Generates miningpools-poolid-*.csv files with the number of blocks for this pool id per day.
 pub fn mining_pool_blocks_per_day_csv(
     csv_path: &str,
