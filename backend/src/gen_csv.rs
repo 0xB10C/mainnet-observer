@@ -477,6 +477,47 @@ pub fn mining_centralization_index_with_proxy_pools_csv(
     Ok(())
 }
 
+// Generates a CSV file with per-pool stats for blocks signaling a given version bit:
+// pool name, first block height and date, and total count.
+// Only blocks within [start_height, end_height] are considered.
+pub fn pools_mining_version_bit_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+    filename: &str,
+    bit: u8,
+    start_height: i64,
+    end_height: i64,
+) -> Result<(), MainError> {
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating {}.csv file...", filename);
+
+    let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, filename))?;
+    file.write_all("pool,height,date,total\n".as_bytes())?;
+
+    let pool_data = bitcoin_pool_identification::default_data(Network::Bitcoin);
+    let pool_names: BTreeMap<u64, String> =
+        pool_data.iter().map(|p| (p.id, p.name.clone())).collect();
+
+    let rows = db::get_pools_mining_version_bit(&mut conn, bit, start_height, end_height)?;
+    let content: String = rows
+        .iter()
+        .map(|(pool_id, count, first_height, first_date)| {
+            format!(
+                "{},{},{},{}\n",
+                pool_names
+                    .get(&(*pool_id as u64))
+                    .unwrap_or(&pool_id.to_string()),
+                first_height,
+                first_date,
+                count,
+            )
+        })
+        .collect();
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
 // Generates a CSV file with the number of blocks per day signaling a given BIP9 version bit.
 pub fn version_bit_signaling_csv(
     csv_path: &str,

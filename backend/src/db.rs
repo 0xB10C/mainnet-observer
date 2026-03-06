@@ -484,6 +484,50 @@ pub struct PoolBlockPerDay {
     pub total: i64,
 }
 
+/// Returns per-pool stats for blocks where a specific version bit is set:
+/// pool_id, total block count, height and date of the first such block.
+/// Only blocks within [start_height, end_height] are considered.
+pub fn get_pools_mining_version_bit(
+    conn: &mut SqliteConnection,
+    bit: u8,
+    start_height: i64,
+    end_height: i64,
+) -> Result<Vec<(i64, i64, i64, String)>, diesel::result::Error> {
+    #[derive(QueryableByName)]
+    struct Row {
+        #[diesel(sql_type = BigInt)]
+        pool_id: i64,
+        #[diesel(sql_type = BigInt)]
+        count: i64,
+        #[diesel(sql_type = BigInt)]
+        first_height: i64,
+        #[diesel(sql_type = Text)]
+        first_date: String,
+    }
+
+    let bit_mask: u32 = 1 << bit;
+    let rows: Vec<Row> = sql_query(format!(
+        r#"
+        SELECT
+            pool_id,
+            COUNT(*) AS count,
+            MIN(height) AS first_height,
+            MIN(date) AS first_date
+        FROM block_stats
+        WHERE (version & {bit_mask}) != 0
+          AND height >= {start_height}
+          AND height <= {end_height}
+        GROUP BY pool_id
+        ORDER BY first_date;
+        "#,
+    ))
+    .get_results(conn)?;
+    Ok(rows
+        .into_iter()
+        .map(|r| (r.pool_id, r.count, r.first_height, r.first_date))
+        .collect())
+}
+
 /// Returns the number of blocks per day where a specific version bit is set.
 /// The block version is a u32 in the Bitcoin protocol but stored as a signed
 /// integer in SQLite. Using `!= 0` against a single-bit mask avoids any
