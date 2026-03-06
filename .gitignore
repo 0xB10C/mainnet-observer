@@ -12,3 +12,5 @@ target/
 *.csv
 
 frontend/public
+
+.DS_Store
