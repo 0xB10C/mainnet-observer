@@ -1,0 +1,81 @@
+<template id="search-result">
+    <div class="col-12 col-md-4 col-lg-3 mb-3">
+        <section class="card shadow-sm bg-white chart-card">
+            <div class="card-img-top ratio ratio-16x9 border-bottom chart-thumbnail-wrapper">
+                <img class="rounded-top chart-thumbnail" id="chart-thumbnail" src=""></img>
+            </div>
+            <div class="card-body pt-2">
+                <h5 class="my-1" id="title">Title</h5>
+                <span class="card-text" id="description">description</span>
+            </div>
+            <a class="stretched-link" id="link" href=""></a>
+        </section>
+    </div>
+</template>
+
+<script src="/js/minisearch.min.js"></script>
+
+<script>
+    window.onload = function () {
+        const searchBar = document.querySelector("#search-bar");
+        const searchResultTemplate = document.querySelector("#search-result");
+        const searchResults = document.querySelector("#search-results");
+
+        fetch('{{ relURL "/index.json" }}')
+            .then((response) => response.json())
+            .then((index) => {
+                let miniSearch = new MiniSearch({
+                    idField: "permalink",
+                    fields: ["title", "tags", "content"],
+                    storeFields: [
+                        "title",
+                        "tags",
+                        "content",
+                        "thumbnail",
+                        "permalink",
+                    ],
+                    searchOptions: {
+                        prefix: true,
+                        boost: { title: 2 },
+                        fuzzy: 0.2,
+                    },
+                });
+
+                miniSearch.addAll(index);
+
+                async function showResults(results) {
+                    while (searchResults.firstChild) {
+                        searchResults.removeChild(searchResults.firstChild);
+                    }
+                    let resultsToDisplay = Math.min(12, results.length);
+                    for (let i = 0; i < resultsToDisplay; i++) {
+                        const clone = searchResultTemplate.content.cloneNode(true);
+                        const result = results[i];
+
+                        clone.querySelector("#title").innerHTML = result.title;
+                        clone.querySelector("#description").innerHTML = result.content;
+                        clone.querySelector("#link").href = result.permalink;
+                        clone.querySelector("#chart-thumbnail").src = "/img/chart-thumbnails/"+ result.thumbnail;
+
+                        searchResults.appendChild(clone);
+                    }
+                }
+
+                async function handleEvent(event) {
+                    let term = event.target.value;
+                    if (term) {
+                        const results = miniSearch.search(term);
+                        showResults(results);
+                    } else {
+                        while (searchResults.firstChild) {
+                            searchResults.removeChild(searchResults.firstChild);
+                        }
+                    }
+                }
+
+                searchBar.addEventListener("input", async (event) => {
+                    handleEvent(event);
+                });
+            });
+    };
+</script>

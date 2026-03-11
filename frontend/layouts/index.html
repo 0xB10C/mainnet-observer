@@ -5,6 +5,16 @@
         <p>{{.Content }}</p>
     </header>
 
+    <section>
+        {{ partialCached "search.html" . }}
+        <div class="col-12">
+            <div class="input-group mb-3">
+                <input class="form-control" id="search-bar" type="search" placeholder="fuzzy search charts by title, description, and tags" aria-label="Search">
+            </div>
+            <div class="row" id="search-results"></div>
+        </div>
+    </section>
+
     <section class="container mx-0 px-0">
         {{range ($.Site.GetPage "taxonomyTerm" "categories").Pages.ByParam "position" }}
         {{ if and (ne .Title "dev-only") (ne .Title "Hidden") }}
