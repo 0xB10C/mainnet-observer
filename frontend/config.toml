@@ -3,7 +3,7 @@
 title = "PLACEHOLDER-TITLE"
 # Can also be controlled with the HUGO_BASEURL env var.
 # FIXME: (unless set via the ENV var)
-baseURL = "https://placeholder.example.com" 
+baseURL = "https://placeholder.example.com"
 languageCode = "en-us"
 
 relativeURLs = true
@@ -38,3 +38,6 @@ weight = 100
 [[related.indices]]
 name  = "categories"
 weight = 50
+
+[outputs]
+  home = ["HTML", "JSON"]

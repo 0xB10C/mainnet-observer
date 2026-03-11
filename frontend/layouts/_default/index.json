@@ -1,0 +1,21 @@
+{{- $.Scratch.Add "index" slice -}}
+
+{{- range .Site.RegularPages -}}
+
+  {{- if not .Draft -}}
+
+    {{- $.Scratch.Add "index"
+    (
+      dict
+        "title"     .Title
+        "thumbnail" .Params.thumbnail
+        "tags"      .Params.tags
+        "content"   (.Summary | plainify)
+        "permalink" .Permalink
+    )
+    -}}
+
+  {{- end -}}
+{{- end -}}
+
+{{- $.Scratch.Get "index" | jsonify -}}
