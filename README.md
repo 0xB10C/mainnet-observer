@@ -1,5 +1,7 @@
 # mainnet-observer
 
+This is a test, please ignore!
+
 This tool and website provides protocol-level statistics and insights about Bitcoin: blocks, transactions, script usage and more.
 Powered by a Rust backend and Hugo-based frontend.
 
