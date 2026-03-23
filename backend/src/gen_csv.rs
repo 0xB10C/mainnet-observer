@@ -331,7 +331,7 @@ pub fn pools_mining_ephemeral_dust_csv(
                 "{},{},{},{}\n",
                 pool_names
                     .get(&(row.pool_id as u64))
-                    .unwrap_or(&row.pool_id.to_string()),
+                    .unwrap_or(&"Unknown".to_string()),
                 row.first_ephemeral_dust_height,
                 row.first_ephemeral_dust_date,
                 row.count,
@@ -368,7 +368,7 @@ pub fn pools_mining_bip54_coinbase_csv(
                 "{},{},{},{}\n",
                 pool_names
                     .get(&(row.pool_id as u64))
-                    .unwrap_or(&row.pool_id.to_string()),
+                    .unwrap_or(&"Unknown".to_string()),
                 row.first_bip54_coibnase_height,
                 row.first_bip54_coibnase_date,
                 row.count,
@@ -427,7 +427,7 @@ pub fn pools_mining_p2a_csv(
                 "{},{},{},{},{}\n",
                 pool_names
                     .get(&(row.pool_id as u64))
-                    .unwrap_or(&row.pool_id.to_string()),
+                    .unwrap_or(&"Unknown".to_string()),
                 input_date_string,
                 output_date_string,
                 row.total_inputs,
@@ -507,7 +507,7 @@ pub fn pools_mining_version_bit_csv(
                 "{},{},{},{}\n",
                 pool_names
                     .get(&(*pool_id as u64))
-                    .unwrap_or(&pool_id.to_string()),
+                    .unwrap_or(&"Unknown".to_string()),
                 first_height,
                 first_date,
                 count,
