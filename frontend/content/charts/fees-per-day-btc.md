@@ -7,7 +7,7 @@ position: 2
 tags: [fees]
 thumbnail: fees-per-day-btc.png
 chartJS: fees-per-day-btc.js
-_build:
+build:
     list: never
 images:
   - /img/chart-thumbnails/fees-per-day-btc.png

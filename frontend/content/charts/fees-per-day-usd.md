@@ -5,7 +5,7 @@ author: "0xb10c"
 #categories: Fees
 #position: 3
 #tags: [usd, fees]
-_build:
+build:
     list: never
 thumbnail: fees-per-day-usd.png
 chartJS: fees-per-day-usd.js

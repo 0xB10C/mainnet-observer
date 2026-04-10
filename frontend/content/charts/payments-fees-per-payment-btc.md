@@ -7,7 +7,7 @@ position: 5
 tags: ["fees", "payment"]
 thumbnail: payments-fees-per-payment-btc.png
 chartJS: payments-fees-per-payment-btc.js
-_build:
+build:
   list: never
 images:
   - /img/chart-thumbnails/payments-fees-per-payment-btc.png

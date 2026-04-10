@@ -9,7 +9,7 @@ aliases:
 tags: [feerate, package]
 thumbnail: fees-package-feerates.png
 chartJS: fees-package-feerates.js
-_build:
+build:
     list: never
 images:
   - /img/chart-thumbnails/fees-package-feerates.png

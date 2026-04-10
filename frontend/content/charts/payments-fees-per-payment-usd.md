@@ -2,7 +2,7 @@
 title: "Fees per Payment (USD)"
 draft: false
 author: "0xb10c"
-_build:
+build:
   list: never
 #categories: Payments
 #position: 6
