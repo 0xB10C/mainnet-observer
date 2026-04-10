@@ -16,7 +16,7 @@ Shows when a pool first mined a transaction spending ephemeral dust.
 <!--more-->
 
 Here, **height** and **date** are the first time the pool mined a transaction spending ephemeral dust.
-The **total** column shows who many times the pool mined transactions spending ephemeral dust.
+The **total** column shows how many times the pool mined transactions spending ephemeral dust.
 
 Since Ephemeral Dust is only supported starting with Bitcoin Core v29.0, this data can be used to get an
 overview of which pools have upgraded to v29.0 or newer. However, since pools like Ocean allow pool
