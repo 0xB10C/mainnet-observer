@@ -2,8 +2,7 @@ const ANNOTATIONS = [annotationBitcoinCorev0_11_0]
 const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_7D
 const NAME = "lock-by-block-height"
 const PRECISION = 2
-let START_DATE =  new Date();
-START_DATE.setFullYear(new Date().getFullYear() - 5);
+let START_DATE = new Date("2014");
 
 const CSVs = [
   fetchCSV("/csv/date.csv"),
