@@ -31,7 +31,7 @@
         {{end}} {{end}}
     </section>
 
-    {{ if .Site.BuildDrafts }}
+    {{ if hugo.IsDevelopment }}
     <script>
         chartURLs = [
         {{- range where .Site.RegularPages "Section" "charts" -}}

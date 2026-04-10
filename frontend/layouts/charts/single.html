@@ -45,7 +45,7 @@
 {{- define "js" -}}
 <script>
   const chartPNGFileName = "{{ .Page.File.TranslationBaseName }}";
-  const isDevBuild = {{ if .Site.BuildDrafts }} true {{ else }} false {{ end }};
+  const isDevBuild = {{ hugo.IsDevelopment }};
   const watermarkText = "{{ .Site.Title }}"
 </script>
 
