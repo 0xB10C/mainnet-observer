@@ -4,7 +4,7 @@ title = "PLACEHOLDER-TITLE"
 # Can also be controlled with the HUGO_BASEURL env var.
 # FIXME: (unless set via the ENV var)
 baseURL = "https://placeholder.example.com"
-languageCode = "en-us"
+locale = "en-us"
 
 relativeURLs = true
 disableHugoGeneratorInject = false
