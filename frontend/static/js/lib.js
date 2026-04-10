@@ -13,6 +13,7 @@ const annotationBitcoinQTv0_8 = {'text': 'Bitcoin-QT v0.8 release', 'date': '201
 const annotationBitcoinCorev0_9 = {'text': 'Bitcoin Core v0.9.0 release', 'date': '2014-03-19'}
 const annotationBitcoinCorev0_10 = {'text': 'Bitcoin Core v0.10.0 release', 'date': '2015-02-16'}
 const annotationBIP66Activated = {'text': 'BIP66 Activation', 'date': '2015-07-04'}
+const annotationBitcoinCorev0_11_0 = {'text': 'Bitcoin Core v0.11.0 released with anti-fee-sniping', 'date': '2015-07-10'}
 const annotationBitcoinCorev0_11_1 = {'text': 'Bitcoin Core v0.11.1 release', 'date': '2015-10-15'}
 const annotationBitcoinCoreSegWitWalletReleased = {'text': 'Bitcoin Core SegWit wallet released', 'date': '2018-02-26'}
 const annotationSegWitActivated = {'text': 'SegWit Activation', 'date': '2017-08-24'}

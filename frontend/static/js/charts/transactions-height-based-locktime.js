@@ -1,4 +1,4 @@
-const ANNOTATIONS = []
+const ANNOTATIONS = [annotationBitcoinCorev0_11_0]
 const MOVING_AVERAGE_DAYS = MOVING_AVERAGE_7D
 const NAME = "lock-by-block-height"
 const PRECISION = 2
