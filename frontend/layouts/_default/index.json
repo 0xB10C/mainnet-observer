@@ -2,7 +2,10 @@
 
 {{- range .Site.RegularPages -}}
 
-  {{- if not .Draft -}}
+  {{- $isChart := eq .Section "charts" -}}
+  {{- $isHidden := or (eq .Params.categories "Hidden") (eq .Params.categories "dev-only") -}}
+
+  {{- if and $isChart (not .Draft) (not $isHidden) -}}
 
     {{- $.Scratch.Add "index"
     (
