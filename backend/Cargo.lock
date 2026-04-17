@@ -120,15 +120,15 @@ dependencies = [
 
 [[package]]
 name = "base64"
-version = "0.13.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "9e1b586273c5702936fe7b7d6896644d8be71e6314cfe09d3167c95f712589e8"
-
-[[package]]
-name = "base64"
 version = "0.21.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "9d297deb1925b89f2ccc13d7635fa0714f12c87adce1c75356b39ca9b7178567"
+
+[[package]]
+name = "base64"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b3254f16251a8381aa12e40e3c4d2f0199f8c6508fbecb9d91f575e0fbb8c6"
 
 [[package]]
 name = "bech32"
@@ -213,6 +213,27 @@ name = "bitflags"
 version = "2.9.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "5c8214115b7bf84099f1309324e63141d4c5d7cc26862f97a0a857dbefe165bd"
+
+[[package]]
+name = "bitreq"
+version = "0.2.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7c84f27ed293cb5218ab015faad9fbb95cf7905865ce71df075c8805a0b33b71"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "bitreq"
+version = "0.3.4"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "08221cf31c5f00fb6fc8fa697cea54176b06801a518bd9d3482aa27099827a3a"
+dependencies = [
+ "rustls",
+ "rustls-webpki",
+ "webpki-roots",
+]
 
 [[package]]
 name = "bumpalo"
@@ -335,9 +356,9 @@ checksum = "06ea2b9bc92be3c2baa9334a323ebca2d6f074ff852cd1d7b11064035cd3868f"
 
 [[package]]
 name = "corepc-client"
-version = "0.10.0"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7755b8b9219b23d166a5897b5e2d8266cbdd0de5861d351b96f6db26bcf415f3"
+checksum = "dc0d0096927a820ea80d4a43a2355209d9a69ef5b420861bf413c7e667cbff0b"
 dependencies = [
  "bitcoin",
  "corepc-types",
@@ -349,16 +370,16 @@ dependencies = [
 
 [[package]]
 name = "corepc-node"
-version = "0.10.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "768391062ec3812e223bb3031c5b2fcdd6e0e60b816157f21df82fd3e6617dc0"
+checksum = "2f8749105873c391b77fc943b7fdf8c05b6c1d06f6e71c6d2746ee7f8bda0072"
 dependencies = [
  "anyhow",
  "bitcoin_hashes",
+ "bitreq 0.3.4",
  "corepc-client",
  "flate2",
  "log",
- "minreq",
  "serde_json",
  "tar",
  "tempfile",
@@ -368,9 +389,9 @@ dependencies = [
 
 [[package]]
 name = "corepc-types"
-version = "0.10.1"
+version = "0.12.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c22db78b0223b66f82f92b14345f06307078f76d94b18280431ea9bc6cd9cbb6"
+checksum = "1583872320eb2ac629c36753023fd072f1ca1b3b74b20cc62bab055b54278789"
 dependencies = [
  "bitcoin",
  "serde",
@@ -505,7 +526,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "33d852cb9b869c2a9b3df2f71a3074817f01e1844f839a144f5fcef059a4eb5d"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -654,12 +675,12 @@ dependencies = [
 
 [[package]]
 name = "jsonrpc"
-version = "0.18.0"
+version = "0.19.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "3662a38d341d77efecb73caf01420cfa5aa63c0253fd7bc05289ef9f6616e1bf"
+checksum = "629d2b4ae586d04b6bae3c75879d7ddd39325c2b67a9c87634f4ec88a488dc65"
 dependencies = [
- "base64 0.13.1",
- "minreq",
+ "base64 0.22.1",
+ "bitreq 0.2.0",
  "serde",
  "serde_json",
 ]
@@ -784,12 +805,8 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "763d142cdff44aaadd9268bebddb156ef6c65a0e13486bb81673cf2d8739f9b0"
 dependencies = [
  "log",
- "once_cell",
- "rustls",
- "rustls-webpki",
  "serde",
  "serde_json",
- "webpki-roots",
 ]
 
 [[package]]
@@ -1083,7 +1100,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
@@ -1092,7 +1109,6 @@ version = "0.21.12"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3f56a14d1f48b391359b22f731fd4bd7e43c97f3c50eee276f3aa09c94784d3e"
 dependencies = [
- "log",
  "ring",
  "rustls-webpki",
  "sct",
@@ -1262,7 +1278,7 @@ dependencies = [
  "fastrand",
  "once_cell",
  "rustix",
- "windows-sys 0.52.0",
+ "windows-sys 0.59.0",
 ]
 
 [[package]]
