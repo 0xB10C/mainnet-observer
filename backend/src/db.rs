@@ -587,6 +587,34 @@ pub fn get_blocks_per_day_per_pool(
     .get_results(conn)
 }
 
+#[derive(Debug, QueryableByName)]
+pub struct BlockWithUnclaimedCoinbase {
+    #[diesel(sql_type = BigInt)]
+    pub height: i64,
+    #[diesel(sql_type = Text)]
+    pub date: String,
+    #[diesel(sql_type = BigInt)]
+    pub coinbase_unclaimed_sat: i64,
+    #[diesel(sql_type = Integer)]
+    pub pool_id: i32,
+}
+
+/// Returns all blocks where the miner did not claim the full allowed coinbase reward,
+/// ordered by height.
+pub fn get_blocks_with_unclaimed_coinbase(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<BlockWithUnclaimedCoinbase>, diesel::result::Error> {
+    sql_query(
+        r#"
+        SELECT height, date, coinbase_unclaimed_sat, pool_id
+        FROM block_stats
+        WHERE coinbase_unclaimed_sat > 0
+        ORDER BY height
+        "#,
+    )
+    .get_results(conn)
+}
+
 pub fn insert_stats(
     conn: &mut SqliteConnection,
     stats: &[Stats],

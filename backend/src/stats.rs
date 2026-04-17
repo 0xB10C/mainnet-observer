@@ -28,7 +28,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 2: add coinbase locktime stats
 // version 3: add coinbase output stats
 // version 4: add UTXO spend age stats
-pub const STATS_VERSION: i32 = 4;
+// version 5: add coinbase_unclaimed_sat
+pub const STATS_VERSION: i32 = 5;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -175,6 +176,9 @@ pub struct BlockStats {
     /// from https://github.com/bitcoin/bips/blob/master/bip-0054.md:
     /// > The coinbase transaction's nLockTime field must be set to the height of the block minus 1 and its nSequence field must not be equal to 0xffffffff.
     pub coinbase_locktime_set_bip54: bool,
+    /// Satoshis that miners did not claim: expected_subsidy + total_tx_fees - coinbase_output_amount.
+    /// A non-zero value means the miner destroyed coins by not claiming the full reward.
+    pub coinbase_unclaimed_sat: i64,
 
     /// number of transactions in the block
     pub transactions: i32,
@@ -227,6 +231,21 @@ impl BlockStats {
 
         let target = Target::from_compact(CompactTarget::from_unprefixed_hex(&block.bits)?);
 
+        let coinbase_output_amount: u64 = coinbase_tx
+            .output
+            .iter()
+            .map(|o| o.value.to_sat())
+            .sum::<u64>();
+        let total_fees: u64 = block
+            .txdata
+            .iter()
+            .skip(1)
+            .map(|tx| tx.fee.unwrap_or_default().to_sat())
+            .sum();
+        let expected_subsidy: u64 = 5_000_000_000u64 >> (height as u64 / 210_000);
+        let coinbase_unclaimed_sat: i64 =
+            (expected_subsidy + total_fees).saturating_sub(coinbase_output_amount) as i64;
+
         Ok(BlockStats {
             stats_version: STATS_VERSION,
             height,
@@ -244,12 +263,9 @@ impl BlockStats {
             weight: block.weight.to_wu() as i64,
             empty: block.txdata.len() == 1,
 
-            coinbase_output_amount: coinbase_tx
-                .output
-                .iter()
-                .map(|o| o.value.to_sat())
-                .sum::<u64>() as i64,
+            coinbase_output_amount: coinbase_output_amount as i64,
             coinbase_weight: coinbase_tx.weight().to_wu() as i64,
+            coinbase_unclaimed_sat,
 
             coinbase_locktime_set: coinbase_tx.lock_time != LockTime::ZERO,
             // from https://github.com/bitcoin/bips/blob/master/bip-0054.md:
@@ -1319,6 +1335,7 @@ mod tests {
                 coinbase_weight: 784,
                 coinbase_locktime_set: true,
                 coinbase_locktime_set_bip54: false,
+                coinbase_unclaimed_sat: 0,
                 transactions: 74,
                 payments: 74,
                 payments_segwit_spending_tx: 65,
@@ -1575,6 +1592,7 @@ mod tests {
                 coinbase_weight: 1272,
                 coinbase_locktime_set: false,
                 coinbase_locktime_set_bip54: false,
+                coinbase_unclaimed_sat: 0,
                 transactions: 645,
                 payments: 1406,
                 payments_segwit_spending_tx: 1307,
@@ -1831,6 +1849,7 @@ mod tests {
                 coinbase_weight: 408,
                 coinbase_locktime_set: false,
                 coinbase_locktime_set_bip54: false,
+                coinbase_unclaimed_sat: 0,
                 transactions: 277,
                 payments: 345,
                 payments_segwit_spending_tx: 0,

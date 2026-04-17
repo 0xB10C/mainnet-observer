@@ -402,6 +402,7 @@ pub fn write_csv_files(
     gen_csv::pools_mining_ephemeral_dust_csv(csv_path, connection.clone())?;
     gen_csv::pools_mining_p2a_csv(csv_path, connection.clone())?;
     gen_csv::pools_mining_bip54_coinbase_csv(csv_path, connection.clone())?;
+    gen_csv::unclaimed_coinbase_blocks_csv(csv_path, connection.clone())?;
     // BIP110 uses version bit 4 for signaling under BIP9.
     gen_csv::pools_mining_version_bit_csv(
         csv_path,

@@ -539,6 +539,43 @@ pub fn version_bit_signaling_csv(
     Ok(())
 }
 
+// Generates a unclaimed-coinbase-blocks.csv file listing all blocks where the miner
+// did not claim the full coinbase reward (subsidy + fees).
+pub fn unclaimed_coinbase_blocks_csv(
+    csv_path: &str,
+    connection: Arc<Mutex<SqliteConnection>>,
+) -> Result<(), MainError> {
+    const FILENAME: &str = "unclaimed-coinbase-blocks";
+
+    let connection = Arc::clone(&connection);
+    let mut conn = connection.lock().unwrap();
+    info!("Generating {} file...", FILENAME);
+
+    let pool_data = bitcoin_pool_identification::default_data(Network::Bitcoin);
+    let pool_names: BTreeMap<u64, String> =
+        pool_data.iter().map(|p| (p.id, p.name.clone())).collect();
+
+    let mut file = std::fs::File::create(format!("{}/{}.csv", csv_path, FILENAME))?;
+    file.write_all("height,date,unclaimed_sat,pool\n".as_bytes())?;
+
+    let rows = db::get_blocks_with_unclaimed_coinbase(&mut conn)?;
+    let content: String = rows
+        .iter()
+        .map(|row| {
+            let pool_name = pool_names
+                .get(&(row.pool_id as u64))
+                .cloned()
+                .unwrap_or_else(|| "Unknown".to_string());
+            format!(
+                "{},{},{},{}\n",
+                row.height, row.date, row.coinbase_unclaimed_sat, pool_name
+            )
+        })
+        .collect();
+    file.write_all(content.as_bytes())?;
+    Ok(())
+}
+
 // Generates miningpools-poolid-*.csv files with the number of blocks for this pool id per day.
 pub fn mining_pool_blocks_per_day_csv(
     csv_path: &str,
