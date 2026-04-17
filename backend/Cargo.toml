@@ -13,7 +13,7 @@ diesel_migrations = "2.1"
 chrono = "0.4.26"
 rawtx-rs = "0.1.20"
 rayon = "1.7.0"
-minreq = { version = "2.12.0", features = ["json-using-serde"] }
+ureq = { version = "3.3", default-features = false, features = ["json"] }
 log = "0.4.22"
 env_logger = "0.11.3"
 clap = { version = "4.5.11", features = ["derive"] }

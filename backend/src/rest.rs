@@ -8,6 +8,7 @@ use std::{error, fmt};
 pub struct RestClient {
     host: String,
     port: u16,
+    agent: ureq::Agent,
 }
 
 #[derive(Deserialize)]
@@ -160,17 +161,17 @@ pub struct Block {
 
 #[derive(Debug)]
 pub enum RestError {
-    MinReq(minreq::Error),
+    Ureq(Box<ureq::Error>),
+    IoError(std::io::Error),
     BitcoinDecode(bitcoin::consensus::encode::Error),
-    Http(i32, String),
 }
 
 impl fmt::Display for RestError {
     fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
         match self {
-            RestError::MinReq(e) => write!(f, "MinReq HTTP GET request error: {:?}", e),
+            RestError::Ureq(e) => write!(f, "HTTP request error: {}", e),
+            RestError::IoError(e) => write!(f, "IO error: {}", e),
             RestError::BitcoinDecode(e) => write!(f, "Bitcoin decode error: {:?}", e),
-            RestError::Http(code, msg) => write!(f, "HTTP error: {} {}", code, msg),
         }
     }
 }
@@ -178,16 +179,22 @@ impl fmt::Display for RestError {
 impl error::Error for RestError {
     fn source(&self) -> Option<&(dyn error::Error + 'static)> {
         match *self {
-            RestError::MinReq(ref e) => Some(e),
+            RestError::Ureq(ref e) => Some(e),
+            RestError::IoError(ref e) => Some(e),
             RestError::BitcoinDecode(ref e) => Some(e),
-            RestError::Http(_, _) => None,
         }
     }
 }
 
-impl From<minreq::Error> for RestError {
-    fn from(e: minreq::Error) -> Self {
-        RestError::MinReq(e)
+impl From<ureq::Error> for RestError {
+    fn from(e: ureq::Error) -> Self {
+        RestError::Ureq(Box::new(e))
+    }
+}
+
+impl From<std::io::Error> for RestError {
+    fn from(e: std::io::Error) -> Self {
+        RestError::IoError(e)
     }
 }
 
@@ -202,20 +209,14 @@ impl RestClient {
         RestClient {
             host: host.to_string(),
             port,
+            agent: ureq::agent(),
         }
     }
 
     pub fn chain_info(&self) -> Result<ChainInfo, RestError> {
         let url = format!("http://{}:{}/rest/chaininfo.json", self.host, self.port);
-        let response = minreq::get(url).send()?;
-        if !(response.status_code == 200 && response.reason_phrase == "OK") {
-            return Err(RestError::Http(
-                response.status_code,
-                response.reason_phrase,
-            ));
-        }
-
-        Ok(response.json::<ChainInfo>()?)
+        let mut resp = self.agent.get(&url).call()?;
+        Ok(resp.body_mut().read_json::<ChainInfo>()?)
     }
 
     pub fn block_at_height(&self, height: u64) -> Result<Block, RestError> {
@@ -223,28 +224,19 @@ impl RestClient {
             "http://{}:{}/rest/blockhashbyheight/{}.hex",
             self.host, self.port, height
         );
-        let response_hash = minreq::get(url).send()?;
-        if !(response_hash.status_code == 200 && response_hash.reason_phrase == "OK") {
-            return Err(RestError::Http(
-                response_hash.status_code,
-                response_hash.reason_phrase,
-            ));
-        }
-
-        let hash = response_hash.as_str()?.trim();
+        let mut resp = self.agent.get(&url).call()?;
+        let hash_str = resp.body_mut().read_to_string()?;
+        let hash = hash_str.trim();
 
         let url = format!(
             "http://{}:{}/rest/block/{}.json",
             self.host, self.port, hash
         );
-        let response_block = minreq::get(url).send()?;
-        if !(response_block.status_code == 200 && response_block.reason_phrase == "OK") {
-            return Err(RestError::Http(
-                response_block.status_code,
-                response_block.reason_phrase,
-            ));
-        }
-
-        Ok(response_block.json()?)
+        let mut resp = self.agent.get(&url).call()?;
+        Ok(resp
+            .body_mut()
+            .with_config()
+            .limit(50 * 1024 * 1024)
+            .read_json()?)
     }
 }
