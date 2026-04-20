@@ -1,0 +1,2 @@
+ALTER TABLE tx_stats ADD COLUMN tx_inscriptions INTEGER NOT NULL DEFAULT (0);
+ALTER TABLE input_stats ADD COLUMN inputs_inscriptions INTEGER NOT NULL DEFAULT (0);

@@ -135,6 +135,7 @@ diesel::table! {
         inputs_spending_prev_6_blocks -> Integer,
         inputs_spending_prev_144_blocks -> Integer,
         inputs_spending_prev_2016_blocks -> Integer,
+        inputs_inscriptions -> Integer,
     }
 }
 
@@ -255,6 +256,7 @@ diesel::table! {
         tx_timelock_not_enforced -> Integer,
         tx_timelock_too_high -> Integer,
         tx_spending_ephemeral_dust -> Integer,
+        tx_inscriptions -> Integer,
     }
 }
 

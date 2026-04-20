@@ -7,8 +7,8 @@ use chrono::DateTime;
 use diesel::prelude::*;
 use log::{debug, error};
 use rawtx_rs::{
-    input::InputType, output::OpReturnFlavor, output::OutputType, script::DEREncoding,
-    script::SignatureType, tx::TxInfo,
+    input::InputInscriptionDetection, input::InputType, output::OpReturnFlavor, output::OutputType,
+    script::DEREncoding, script::SignatureType, tx::TxInfo,
 };
 use statrs::statistics::Data;
 use statrs::statistics::OrderStatistics;
@@ -29,7 +29,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 3: add coinbase output stats
 // version 4: add UTXO spend age stats
 // version 5: add coinbase_unclaimed_sat
-pub const STATS_VERSION: i32 = 5;
+// version 6: add inscription stats
+pub const STATS_VERSION: i32 = 6;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -101,10 +102,14 @@ impl Stats {
             DateTime::from_timestamp(block.time as i64, 0).expect("invalid block header timestamp");
         let date = timestamp.format("%Y-%m-%d").to_string();
         let mut tx_infos: Vec<TxInfo> = Vec::with_capacity(block.txdata.len());
+        let mut txns: Vec<Transaction> = Vec::with_capacity(block.txdata.len());
         for tx in block.txdata.iter() {
             let tx: Transaction = bitcoin::consensus::deserialize(&tx.raw)?;
             match TxInfo::new(&tx) {
-                Ok(txinfo) => tx_infos.push(txinfo),
+                Ok(txinfo) => {
+                    tx_infos.push(txinfo);
+                    txns.push(tx);
+                }
                 Err(e) => {
                     error!(
                         "Could not create TxInfo for {} in block {}: {}",
@@ -124,8 +129,8 @@ impl Stats {
 
         Ok(Stats {
             block: BlockStats::from_block(&block, date.clone(), &tx_infos, &pools)?,
-            tx: TxStats::from_block(&block, date.clone(), &tx_infos),
-            input: InputStats::from_block(&block, date.clone(), &tx_infos),
+            tx: TxStats::from_block(&block, date.clone(), &tx_infos, &txns),
+            input: InputStats::from_block(&block, date.clone(), &tx_infos, &txns),
             output: OutputStats::from_block(&block, date.clone(), &tx_infos),
             script: ScriptStats::from_block(&block, date.clone(), &tx_infos),
             feerate: FeerateStats::from_block(&block, date.clone(), &tx_infos),
@@ -340,6 +345,8 @@ pub struct TxStats {
     pub tx_spending_newly_created_utxos: i32,
     pub tx_spending_ephemeral_dust: i32,
 
+    pub tx_inscriptions: i32,
+
     pub tx_timelock_height: i32,
     pub tx_timelock_timestamp: i32,
     pub tx_timelock_not_enforced: i32,
@@ -347,7 +354,12 @@ pub struct TxStats {
 }
 
 impl TxStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> TxStats {
+    pub fn from_block(
+        block: &Block,
+        date: String,
+        tx_infos: &[TxInfo],
+        txns: &[Transaction],
+    ) -> TxStats {
         let height = block.height;
         let mut s = TxStats::default();
 
@@ -357,7 +369,7 @@ impl TxStats {
         s.height = height;
         s.date = date;
 
-        for (tx, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
+        for (tx, (tx_info, btc_tx)) in block.txdata.iter().zip(tx_infos.iter().zip(txns.iter())) {
             match tx.version {
                 1 => s.tx_version_1 += 1,
                 2 => s.tx_version_2 += 1,
@@ -399,6 +411,14 @@ impl TxStats {
 
             if tx_info.is_signaling_explicit_rbf_replicability() {
                 s.tx_signaling_explicit_rbf += 1;
+            }
+
+            if btc_tx
+                .input
+                .iter()
+                .any(|input| input.reveals_inscription().unwrap_or(false))
+            {
+                s.tx_inscriptions += 1;
             }
 
             if tx.input.len() == 1 {
@@ -674,10 +694,17 @@ pub struct InputStats {
     inputs_spending_prev_6_blocks: i32,
     inputs_spending_prev_144_blocks: i32,
     inputs_spending_prev_2016_blocks: i32,
+
+    inputs_inscriptions: i32,
 }
 
 impl InputStats {
-    pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> InputStats {
+    pub fn from_block(
+        block: &Block,
+        date: String,
+        tx_infos: &[TxInfo],
+        txns: &[Transaction],
+    ) -> InputStats {
         let height = block.height;
         let txids_in_this_block: HashSet<Txid> = block.txdata.iter().map(|tx| tx.txid).collect();
 
@@ -687,7 +714,7 @@ impl InputStats {
             ..Default::default()
         };
 
-        for (tx, tx_info) in block.txdata.iter().zip(tx_infos.iter()) {
+        for (tx, (tx_info, btc_tx)) in block.txdata.iter().zip(tx_infos.iter().zip(txns.iter())) {
             for input in tx_info.input_infos.iter() {
                 if input.is_spending_legacy() {
                     s.inputs_spending_legacy += 1;
@@ -766,6 +793,12 @@ impl InputStats {
                 }
                 if confirmation_age <= 2016 {
                     s.inputs_spending_prev_2016_blocks += 1;
+                }
+            }
+
+            for input in btc_tx.input.iter() {
+                if input.reveals_inscription().unwrap_or(false) {
+                    s.inputs_inscriptions += 1;
                 }
             }
         }
@@ -1371,6 +1404,7 @@ mod tests {
                 tx_1_input_2_output: 8,
                 tx_spending_newly_created_utxos: 9,
                 tx_spending_ephemeral_dust: 0,
+                tx_inscriptions: 34,
                 tx_timelock_height: 6,
                 tx_timelock_timestamp: 1,
                 tx_timelock_not_enforced: 1,
@@ -1409,6 +1443,7 @@ mod tests {
                 inputs_spending_prev_6_blocks: 43,
                 inputs_spending_prev_144_blocks: 43,
                 inputs_spending_prev_2016_blocks: 17060,
+                inputs_inscriptions: 34,
             },
             output: OutputStats {
                 height: 888395,
@@ -1628,6 +1663,7 @@ mod tests {
                 tx_1_input_2_output: 339,
                 tx_spending_newly_created_utxos: 110,
                 tx_spending_ephemeral_dust: 0,
+                tx_inscriptions: 0,
                 tx_timelock_height: 209,
                 tx_timelock_timestamp: 0,
                 tx_timelock_not_enforced: 22,
@@ -1666,6 +1702,7 @@ mod tests {
                 inputs_spending_prev_6_blocks: 818,
                 inputs_spending_prev_144_blocks: 1557,
                 inputs_spending_prev_2016_blocks: 2053,
+                inputs_inscriptions: 0,
             },
             output: OutputStats {
                 height: 739990,
@@ -1885,6 +1922,7 @@ mod tests {
                 tx_1_input_2_output: 125,
                 tx_spending_newly_created_utxos: 45,
                 tx_spending_ephemeral_dust: 0,
+                tx_inscriptions: 0,
                 tx_timelock_height: 1,
                 tx_timelock_timestamp: 0,
                 tx_timelock_not_enforced: 0,
@@ -1923,6 +1961,7 @@ mod tests {
                 inputs_spending_prev_6_blocks: 229,
                 inputs_spending_prev_144_blocks: 426,
                 inputs_spending_prev_2016_blocks: 654,
+                inputs_inscriptions: 0,
             },
             output: OutputStats {
                 height: 361582,
