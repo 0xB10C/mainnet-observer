@@ -1,8 +1,8 @@
 pub mod db;
 mod gen_csv;
-mod rest;
+pub mod rest;
 mod schema;
-mod stats;
+pub mod stats;
 
 use clap::Parser;
 use diesel::SqliteConnection;
