@@ -33,6 +33,7 @@ fn main() {
             Arc::clone(&conn),
             args.num_threads,
             args.start_height,
+            args.database_batch_size,
         ) {
             error!("Could not collect statistics: {}", e);
             exit(1);

@@ -188,6 +188,7 @@ fn test_integration_minimal() {
         Arc::clone(&conn),
         10, // Bitcoin Core v29 has 16, in the test use just use 10 of them.
         None,
+        1000,
     ) {
         panic!("Failed to collect statistics: {:?}", e);
     }
@@ -228,7 +229,7 @@ fn test_collect_statistics_fails_on_block_fetch_retry_exhaustion() {
     let conn = setup_db();
     let mock = MockRestServer::start();
 
-    let result = collect_statistics(&mock.host, mock.port, Arc::clone(&conn), 2, None);
+    let result = collect_statistics(&mock.host, mock.port, Arc::clone(&conn), 2, None, 1000);
 
     match result {
         Err(mainnet_observer_backend::MainError::REST(e)) => {

@@ -17,7 +17,7 @@ use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use std::{error, fmt, io, thread};
 
-const DATABASE_BATCH_SIZE: usize = 100;
+const DEFAULT_DATABASE_BATCH_SIZE: usize = 1000;
 
 // Retry configuration for block fetching
 const MAX_RETRY_ATTEMPTS: u32 = 5;
@@ -139,6 +139,10 @@ pub struct Args {
     /// Useful for testing database or stats changes without doing a full sync.
     #[arg(long)]
     pub start_height: Option<u64>,
+
+    /// Number of block stats to batch together before writing to the database.
+    #[arg(long, default_value_t = DEFAULT_DATABASE_BATCH_SIZE)]
+    pub database_batch_size: usize,
 }
 
 pub fn collect_statistics(
@@ -147,6 +151,7 @@ pub fn collect_statistics(
     connection: Arc<Mutex<SqliteConnection>>,
     num_threads: usize,
     start_height: Option<u64>,
+    database_batch_size: usize,
 ) -> Result<(), MainError> {
     let connection = Arc::clone(&connection);
 
@@ -322,7 +327,7 @@ pub fn collect_statistics(
         let connection = Arc::clone(&connection);
         let mut conn = connection.lock().unwrap();
         db::performance_tune(&mut conn)?;
-        let mut stat_buffer = Vec::with_capacity(DATABASE_BATCH_SIZE);
+        let mut stat_buffer = Vec::with_capacity(database_batch_size);
         let mut written = 0;
 
         loop {
@@ -342,7 +347,7 @@ pub fn collect_statistics(
             };
 
             stat_buffer.push(stat);
-            if stat_buffer.len() >= DATABASE_BATCH_SIZE {
+            if stat_buffer.len() >= database_batch_size {
                 db::insert_stats(&mut conn, &stat_buffer)?;
                 written += stat_buffer.len();
                 info!(
