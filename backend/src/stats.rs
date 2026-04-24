@@ -8,7 +8,7 @@ use diesel::prelude::*;
 use log::{debug, error};
 use rawtx_rs::{
     input::InputInscriptionDetection, input::InputType, output::OpReturnFlavor, output::OutputType,
-    script::DEREncoding, script::SignatureType, tx::TxInfo,
+    script::DEREncoding, script::SignatureType, tx::TransactionSigops, tx::TxInfo,
 };
 use statrs::statistics::Data;
 use statrs::statistics::OrderStatistics;
@@ -30,7 +30,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 4: add UTXO spend age stats
 // version 5: add coinbase_unclaimed_sat
 // version 6: add inscription stats
-pub const STATS_VERSION: i32 = 6;
+// version 7: add sigops
+pub const STATS_VERSION: i32 = 7;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -128,7 +129,7 @@ impl Stats {
         let pools = default_data(Network::Bitcoin);
 
         Ok(Stats {
-            block: BlockStats::from_block(&block, date.clone(), &tx_infos, &pools)?,
+            block: BlockStats::from_block(&block, date.clone(), &tx_infos, &txns, &pools)?,
             tx: TxStats::from_block(&block, date.clone(), &tx_infos, &txns),
             input: InputStats::from_block(&block, date.clone(), &tx_infos, &txns),
             output: OutputStats::from_block(&block, date.clone(), &tx_infos),
@@ -185,6 +186,9 @@ pub struct BlockStats {
     /// A non-zero value means the miner destroyed coins by not claiming the full reward.
     pub coinbase_unclaimed_sat: i64,
 
+    /// Total number of sigops in all transactions in the block.
+    pub sigops: i32,
+
     /// number of transactions in the block
     pub transactions: i32,
     /// number of payments in the block
@@ -210,6 +214,7 @@ impl BlockStats {
         block: &Block,
         date: String,
         tx_infos: &[TxInfo],
+        txns: &[Transaction],
         pools: &[Pool],
     ) -> Result<BlockStats, StatsError> {
         let height = block.height;
@@ -271,6 +276,7 @@ impl BlockStats {
             coinbase_output_amount: coinbase_output_amount as i64,
             coinbase_weight: coinbase_tx.weight().to_wu() as i64,
             coinbase_unclaimed_sat,
+            sigops: txns.iter().map(|tx| tx.sigops().unwrap_or(0)).sum::<usize>() as i32,
 
             coinbase_locktime_set: coinbase_tx.lock_time != LockTime::ZERO,
             // from https://github.com/bitcoin/bips/blob/master/bip-0054.md:
@@ -1369,6 +1375,7 @@ mod tests {
                 coinbase_locktime_set: true,
                 coinbase_locktime_set_bip54: false,
                 coinbase_unclaimed_sat: 0,
+                sigops: 178,
                 transactions: 74,
                 payments: 74,
                 payments_segwit_spending_tx: 65,
@@ -1628,6 +1635,7 @@ mod tests {
                 coinbase_locktime_set: false,
                 coinbase_locktime_set_bip54: false,
                 coinbase_unclaimed_sat: 0,
+                sigops: 4989,
                 transactions: 645,
                 payments: 1406,
                 payments_segwit_spending_tx: 1307,
@@ -1887,6 +1895,7 @@ mod tests {
                 coinbase_locktime_set: false,
                 coinbase_locktime_set_bip54: false,
                 coinbase_unclaimed_sat: 0,
+                sigops: 2464,
                 transactions: 277,
                 payments: 345,
                 payments_segwit_spending_tx: 0,
