@@ -75,3 +75,42 @@ jobs:
     - uses: ./.github/actions/setup-ubuntu-action
     - name: cargo clippy
       run: cargo clippy --all-targets --all-features --manifest-path backend/Cargo.toml
+
+  ubuntu-bench:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v6
+      with:
+        fetch-depth: 0
+    - uses: ./.github/actions/setup-ubuntu-action
+
+    - name: Bench merge base
+      run: |
+        git checkout $(git merge-base HEAD origin/${{ github.base_ref }})
+        cargo bench --bench stats --manifest-path backend/Cargo.toml 2>&1 | tee bench-base.txt
+
+    - name: Bench PR head
+      run: |
+        git checkout ${{ github.event.pull_request.head.sha }}
+        cargo bench --bench stats --manifest-path backend/Cargo.toml 2>&1 | tee bench-head.txt
+
+    - name: Post benchmark summary
+      run: |
+        echo '## Benchmark Results' >> $GITHUB_STEP_SUMMARY
+        echo '### Base (merge base)' >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cat bench-base.txt >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        echo '### PR Head' >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+        cat bench-head.txt >> $GITHUB_STEP_SUMMARY
+        echo '```' >> $GITHUB_STEP_SUMMARY
+
+    - name: Upload benchmark results
+      uses: actions/upload-artifact@v4
+      with:
+        name: benchmark-results
+        path: |
+          bench-base.txt
+          bench-head.txt
