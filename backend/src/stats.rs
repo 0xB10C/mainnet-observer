@@ -480,8 +480,7 @@ impl TxStats {
                 // A transaction with more than 1 dust output was likely submitted out-of-band, so don't count them in
                 // the `tx_spending_ephemeral_dust` tally
                 if staged_ephemeral_dust_outpoints.len() == 1 {
-                    ephemeral_dust_outpoints_in_this_block
-                        .extend(staged_ephemeral_dust_outpoints.into_iter());
+                    ephemeral_dust_outpoints_in_this_block.extend(staged_ephemeral_dust_outpoints);
                 }
             }
 
