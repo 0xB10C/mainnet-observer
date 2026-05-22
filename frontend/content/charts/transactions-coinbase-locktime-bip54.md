@@ -4,7 +4,7 @@ draft: false
 author: "0xb10c"
 categories: Transactions
 categories_weight: 0
-tags: [coinbase, locktime bip54]
+tags: [coinbase, locktime, bip54]
 thumbnail: transactions-coinbase-locktime-bip54.png
 chartJS: transactions-coinbase-locktime-bip54.js
 images:
