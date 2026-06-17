@@ -23,4 +23,4 @@ The net UTXO-set size decreases.
 This happens for example when an exchange consolidates a lot of UTXOs into one.
 If the rate is lower than 1.00, then the net UTXO-set size increases.
 More new UTXOs are created than are spent.
-This happens for example when a [transaction spends one input and creates two outputs](/charts/transactions-1in-2out/), where one pays a recipient and the other one is a change output.
+This happens for example when a [transaction spends one input and creates two outputs](/charts/transactions-input-output-distribution/), where one pays a recipient and the other one is a change output.
