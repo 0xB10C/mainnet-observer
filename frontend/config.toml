@@ -1,6 +1,6 @@
 # Can also be controlled with the HUGO_TITLE env var.
 # FIXME: (unless set via the ENV var)
-title = "PLACEHOLDER-TITLE"
+title = ""
 # Can also be controlled with the HUGO_BASEURL env var.
 # FIXME: (unless set via the ENV var)
 baseURL = "https://placeholder.example.com"
