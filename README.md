@@ -64,8 +64,16 @@ the main page a "generate chart-thumbnails" button appears. Before clicking on t
 you have up-to-date CSV files for the chart data. Clicking on the butten will open all chart
 pages and will automatically generate and download thumbnails as PNGs. You might need to allow the
 page to open "popup windows". Once all thumbnails are downloaded, remove the existing thumbnails in
-`frontend/static/img/chart-thumbnails` and copy the newly downloaded thumbnails. Don't forget to run
-`optipng frontend/static/img/chart-thumbnails/*` on them before adding them to Git.
+`frontend/static/img/chart-thumbnails` and copy the newly downloaded thumbnails. 
+
+To optimize thumbnail file size, the following can be used:
+
+```
+# in frontend/static/img/chart-thumbnails/
+$ pngquant --quality=70-95 --ext .png --force --strip --skip-if-larger --speed 1 *.png
+$ zopflipng -m -y --prefix ""  *.png
+$ for file in zopfli_*; do mv "$file" "${file#zopfli_}"; done
+```
 
 ## Nix package and NixOS module
 

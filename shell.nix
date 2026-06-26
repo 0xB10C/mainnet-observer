@@ -25,5 +25,7 @@ pkgs.mkShell {
     # frontend
     pkgs.hugo
     pkgs.optipng
+    pkgs.zopfli
+    pkgs.pngquant
   ];
 }
