@@ -30,6 +30,7 @@ diesel::table! {
         coinbase_unclaimed_sat -> BigInt,
         stats_version -> Integer,
         hash -> Text,
+        sigops -> Integer,
     }
 }
 
