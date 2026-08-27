@@ -8,7 +8,7 @@ use diesel::prelude::*;
 use log::{debug, error};
 use rawtx_rs::{
     input::InputInscriptionDetection, input::InputType, output::OpReturnFlavor, output::OutputType,
-    script::DEREncoding, script::SignatureType, tx::TxInfo,
+    script::DEREncoding, script::SignatureType, tx::TransactionSigops, tx::TxInfo,
 };
 use statrs::statistics::Data;
 use statrs::statistics::OrderStatistics;
@@ -31,7 +31,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 5: add coinbase_unclaimed_sat
 // version 6: add inscription stats
 // version 7: add block hash
-pub const STATS_VERSION: i32 = 7;
+// version 8: add sigops
+pub const STATS_VERSION: i32 = 8;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -104,11 +105,13 @@ impl Stats {
         let date = timestamp.format("%Y-%m-%d").to_string();
         let mut tx_infos: Vec<TxInfo> = Vec::with_capacity(block.txdata.len());
         let mut txns: Vec<Transaction> = Vec::with_capacity(block.txdata.len());
+        let mut sigops: usize = 0;
         for tx in block.txdata.iter() {
             let tx: Transaction = bitcoin::consensus::deserialize(&tx.raw)?;
             match TxInfo::new(&tx) {
                 Ok(txinfo) => {
                     tx_infos.push(txinfo);
+                    sigops += tx.sigops()?;
                     txns.push(tx);
                 }
                 Err(e) => {
@@ -129,7 +132,7 @@ impl Stats {
         let pools = default_data(Network::Bitcoin);
 
         Ok(Stats {
-            block: BlockStats::from_block(&block, date.clone(), &tx_infos, &pools)?,
+            block: BlockStats::from_block(&block, date.clone(), &tx_infos, sigops, &pools)?,
             tx: TxStats::from_block(&block, date.clone(), &tx_infos, &txns),
             input: InputStats::from_block(&block, date.clone(), &tx_infos, &txns),
             output: OutputStats::from_block(&block, date.clone(), &tx_infos),
@@ -207,6 +210,9 @@ pub struct BlockStats {
 
     /// the block hash
     pub hash: String,
+
+    /// The block's legacy sigop count, summed over all transactions.
+    pub sigops: i32,
 }
 
 impl BlockStats {
@@ -214,6 +220,7 @@ impl BlockStats {
         block: &Block,
         date: String,
         tx_infos: &[TxInfo],
+        sigops: usize,
         pools: &[Pool],
     ) -> Result<BlockStats, StatsError> {
         let height = block.height;
@@ -308,6 +315,8 @@ impl BlockStats {
 
             inputs: block.txdata.iter().map(|tx| tx.input.len()).sum::<usize>() as i32,
             outputs: block.txdata.iter().map(|tx| tx.output.len()).sum::<usize>() as i32,
+
+            sigops: sigops as i32,
         })
     }
 }
@@ -1385,6 +1394,7 @@ mod tests {
                 pool_id: 140,
                 hash: "00000000000000000000b28f0957fc6ea79c19a9debf98a23033009ef619bfd6"
                     .to_string(),
+                sigops: 178,
             },
             tx: TxStats {
                 height: 888395,
@@ -1646,6 +1656,7 @@ mod tests {
                 pool_id: 123,
                 hash: "000000000000000000056aa302bd92a1da4d6c996eee77ee790490c2d50c626e"
                     .to_string(),
+                sigops: 4989,
             },
             tx: TxStats {
                 height: 739990,
@@ -1907,6 +1918,7 @@ mod tests {
                 pool_id: 39,
                 hash: "0000000000000000070a2bb3b92c20d5c2c971e6e1a7abe55cdbbe6a2dd9a5ad"
                     .to_string(),
+                sigops: 2464,
             },
             tx: TxStats {
                 height: 361582,
