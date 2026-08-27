@@ -29,6 +29,7 @@ diesel::table! {
         coinbase_locktime_set_bip54 -> Bool,
         coinbase_unclaimed_sat -> BigInt,
         stats_version -> Integer,
+        hash -> Text,
     }
 }
 

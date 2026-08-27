@@ -30,7 +30,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 4: add UTXO spend age stats
 // version 5: add coinbase_unclaimed_sat
 // version 6: add inscription stats
-pub const STATS_VERSION: i32 = 6;
+// version 7: add block hash
+pub const STATS_VERSION: i32 = 7;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -203,6 +204,9 @@ pub struct BlockStats {
     /// the pool id, if the pool could be identified. If the pool is unknown,
     /// the id will be 0. See the IDs in https://github.com/bitcoin-data/mining-pools/blob/generated/pool-list.json
     pub pool_id: i32,
+
+    /// the block hash
+    pub hash: String,
 }
 
 impl BlockStats {
@@ -261,6 +265,7 @@ impl BlockStats {
             difficulty: target.difficulty_float() as i64,
             log2_work: target.to_work().log2() as f32,
             pool_id,
+            hash: block.hash.to_string(),
 
             size: block.size,
             stripped_size: block.stripped_size,
@@ -1378,6 +1383,8 @@ mod tests {
                 // This block was mined by MaraPool which has the ID 140
                 // https://github.com/bitcoin-data/mining-pools/blob/7eb988330043456189ba6d01fd32811a1f234f2a/pool-list.json#L1518
                 pool_id: 140,
+                hash: "00000000000000000000b28f0957fc6ea79c19a9debf98a23033009ef619bfd6"
+                    .to_string(),
             },
             tx: TxStats {
                 height: 888395,
@@ -1637,6 +1644,8 @@ mod tests {
                 // This block was mined by Binance Pool which has the ID 123
                 // https://github.com/bitcoin-data/mining-pools/blob/7eb988330043456189ba6d01fd32811a1f234f2a/pool-list.json#L1330C11-L1330C14
                 pool_id: 123,
+                hash: "000000000000000000056aa302bd92a1da4d6c996eee77ee790490c2d50c626e"
+                    .to_string(),
             },
             tx: TxStats {
                 height: 739990,
@@ -1896,6 +1905,8 @@ mod tests {
                 // This block was mined by MegaBigPower which has the ID 39
                 // https://github.com/bitcoin-data/mining-pools/blob/7eb988330043456189ba6d01fd32811a1f234f2a/pool-list.json#L388-L401
                 pool_id: 39,
+                hash: "0000000000000000070a2bb3b92c20d5c2c971e6e1a7abe55cdbbe6a2dd9a5ad"
+                    .to_string(),
             },
             tx: TxStats {
                 height: 361582,

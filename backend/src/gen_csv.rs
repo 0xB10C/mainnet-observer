@@ -14,8 +14,9 @@ const METRIC_TABLES: [&str; 6] = [
     "output_stats",
     "feerate_stats",
 ];
-const COLUMN_NAMES_THAT_ARENT_METRICS: [&str; 6] =
-    ["height", "date", "version", "nonce", "bits", "pool_id"];
+const COLUMN_NAMES_THAT_ARENT_METRICS: [&str; 7] = [
+    "height", "date", "version", "nonce", "bits", "pool_id", "hash",
+];
 
 // An array with pool IDs based on https://github.com/bitcoin-data/mining-pools/blob/generated/pool-list.json
 // representing the "AntPool & Friends" proxy pool group.
