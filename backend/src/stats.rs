@@ -8,7 +8,7 @@ use diesel::prelude::*;
 use log::{debug, error};
 use rawtx_rs::{
     input::InputInscriptionDetection, input::InputType, output::OpReturnFlavor, output::OutputType,
-    script::DEREncoding, script::SignatureType, tx::TransactionSigops, tx::TxInfo,
+    script::DEREncoding, script::SignatureType, tx::TxInfo,
 };
 use statrs::statistics::Data;
 use statrs::statistics::OrderStatistics;
@@ -110,8 +110,11 @@ impl Stats {
             let tx: Transaction = bitcoin::consensus::deserialize(&tx.raw)?;
             match TxInfo::new(&tx) {
                 Ok(txinfo) => {
+                    // TxInfo counts the sigops while it detects the input and
+                    // output types. This is cheaper than counting them on the
+                    // Transaction, which would re-run the type detection.
+                    sigops += txinfo.sigops();
                     tx_infos.push(txinfo);
-                    sigops += tx.sigops()?;
                     txns.push(tx);
                 }
                 Err(e) => {

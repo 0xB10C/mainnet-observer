@@ -11,7 +11,7 @@ serde = "1.0.188"
 diesel = { version = "= 2.1", features = ["sqlite", "64-column-tables"] }
 diesel_migrations = "2.1"
 chrono = "0.4.26"
-rawtx-rs = "0.1.20"
+rawtx-rs = "0.2.0"
 rayon = "1.7.0"
 minreq = { version = "2.12.0", features = ["json-using-serde"] }
 log = "0.4.22"
