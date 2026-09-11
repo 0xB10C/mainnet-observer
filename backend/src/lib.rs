@@ -4,6 +4,7 @@ pub mod rest;
 mod schema;
 pub mod stats;
 
+use bitcoin::BlockHash;
 use clap::Parser;
 use diesel::SqliteConnection;
 use log::{debug, error, info, warn};
@@ -141,6 +142,149 @@ pub struct Args {
     pub start_height: Option<u64>,
 }
 
+/// Runs `request` until it succeeds, retrying with exponential backoff.
+///
+/// `what` names the thing being requested and is only used for log messages.
+/// Returns `Ok(None)` when `cancelled` was set while we were retrying, meaning
+/// somebody else has already failed and there is no point in carrying on.
+fn with_retry<T>(
+    what: &str,
+    cancelled: &AtomicBool,
+    mut request: impl FnMut() -> Result<T, rest::RestError>,
+) -> Result<Option<T>, rest::RestError> {
+    let mut last_error = None;
+    for attempt in 1..=MAX_RETRY_ATTEMPTS {
+        if cancelled.load(Ordering::Relaxed) {
+            return Ok(None);
+        }
+        match request() {
+            Ok(value) => return Ok(Some(value)),
+            Err(e) => {
+                if attempt < MAX_RETRY_ATTEMPTS {
+                    let delay =
+                        INITIAL_RETRY_DELAY_MS * 2u64.saturating_pow(attempt.saturating_sub(1));
+                    warn!(
+                        "Could not get {} (attempt {}/{}): {}. Retrying in {}ms...",
+                        what, attempt, MAX_RETRY_ATTEMPTS, e, delay
+                    );
+                    thread::sleep(Duration::from_millis(delay));
+                }
+                last_error = Some(e);
+            }
+        }
+    }
+
+    if cancelled.load(Ordering::Relaxed) {
+        return Ok(None);
+    }
+    let e = last_error.expect("we tried at least once");
+    error!(
+        "Failed to get {} after {} attempts: {}",
+        what, MAX_RETRY_ATTEMPTS, e
+    );
+    Err(e)
+}
+
+/// Resolves the block hash for every height in `heights`, which must be sorted.
+///
+/// The REST interface looks up one block hash per request, but it serves whole
+/// runs of block headers at a time, walking from a given block towards the tip.
+/// Anchoring on the first height we need and walking the headers from there
+/// turns a full sync's ~900k hash lookups into a few hundred requests.
+fn resolve_block_hashes(
+    client: &rest::RestClient,
+    heights: &[i64],
+) -> Result<Vec<(i64, BlockHash)>, MainError> {
+    // Nothing here cancels; the walk happens before the fetch threads start.
+    let never_cancelled = AtomicBool::new(false);
+
+    let (Some(&first), Some(&last)) = (heights.first(), heights.last()) else {
+        return Ok(Vec::new());
+    };
+
+    let hash_at = |height: i64| -> Result<BlockHash, MainError> {
+        let what = format!("block hash at height {}", height);
+        Ok(with_retry(&what, &never_cancelled, || {
+            client.block_hash_at_height(height as u64)
+        })?
+        .expect("the header walk never sets the cancel flag"))
+    };
+
+    // Walking only pays off when we need more hashes than the walk costs
+    // requests. For a few heights scattered far apart, asking for each hash
+    // directly is cheaper.
+    let span = (last - first + 1) as usize;
+    let walk_requests = 1 + span.div_ceil(rest::MAX_HEADERS_PER_REQUEST - 1);
+    if walk_requests >= heights.len() {
+        debug!(
+            "get-blocks: looking up {} block hashes individually",
+            heights.len()
+        );
+        return heights
+            .iter()
+            .map(|&height| Ok((height, hash_at(height)?)))
+            .collect();
+    }
+
+    info!(
+        "Walking block headers from height {} to {} to resolve {} block hashes",
+        first,
+        last,
+        heights.len()
+    );
+
+    let mut hashes = Vec::with_capacity(heights.len());
+    let mut wanted = heights.iter().copied().peekable();
+    let mut height = first;
+    let mut hash = hash_at(first)?;
+
+    loop {
+        let remaining = (last - height + 1) as usize;
+        let what = format!("block headers starting at height {}", height);
+        let headers = with_retry(&what, &never_cancelled, || client.headers(&hash, remaining))?
+            .expect("the header walk never sets the cancel flag");
+
+        let mut previous: Option<BlockHash> = None;
+        for (offset, header) in headers.iter().enumerate() {
+            let header_height = height + offset as i64;
+            let header_hash = header.block_hash();
+            if let Some(previous) = previous {
+                if header.prev_blockhash != previous {
+                    return Err(MainError::REST(rest::RestError::Response(format!(
+                        "header at height {} doesn't build on the header before it",
+                        header_height
+                    ))));
+                }
+            }
+            // `heights` may have gaps, so skip past anything we don't need.
+            while wanted.peek().is_some_and(|&w| w < header_height) {
+                wanted.next();
+            }
+            if wanted.peek() == Some(&header_height) {
+                hashes.push((header_height, header_hash));
+                wanted.next();
+            }
+            previous = Some(header_hash);
+        }
+
+        // The first header of a response is the block we anchored on.
+        let Some(advanced) = headers.len().checked_sub(1).filter(|a| *a > 0) else {
+            return Err(MainError::REST(rest::RestError::Response(format!(
+                "no headers after {} at height {}, can't walk any further",
+                hash, height
+            ))));
+        };
+        height += advanced as i64;
+        hash = previous.expect("the response held at least two headers");
+
+        if height >= last {
+            break;
+        }
+    }
+
+    Ok(hashes)
+}
+
 pub fn collect_statistics(
     rest_host: &str,
     rest_port: u16,
@@ -196,6 +340,10 @@ pub fn collect_statistics(
         heights_to_fetch.last().unwrap_or(&0),
     );
 
+    // Resolving the hashes up front means the fetch threads only make one
+    // request per block instead of two.
+    let block_hashes = resolve_block_hashes(&client, &heights_to_fetch)?;
+
     // TODO: Shuffel the heights around, so each rayon thread gets different heights.
     // This avoids one thread getting all small, fast to fetch blocks while other
     // threads need longer to fetch bigger blocks.
@@ -213,8 +361,8 @@ pub fn collect_statistics(
             .unwrap();
         let cancel = AtomicBool::new(false);
         pool.install(|| {
-            heights_to_fetch.par_iter()
-                .try_for_each(|&height| {
+            block_hashes.par_iter()
+                .try_for_each(|&(height, hash)| {
                     // Fast exit if another thread already failed
                     if cancel.load(Ordering::Relaxed) {
                         return Ok(());
@@ -222,42 +370,12 @@ pub fn collect_statistics(
 
                     debug!("get-blocks: getting block at height {}", height);
 
-                    // Retry loop with exponential backoff
-                    let mut last_error = None;
-                    let block = (1..=MAX_RETRY_ATTEMPTS).find_map(|attempt| {
-                        if cancel.load(Ordering::Relaxed) {
-                            return None;
-                        }
-                        match client.block_at_height(height as u64) {
-                            Ok(block) => Some(block),
-                            Err(e) => {
-                                if attempt < MAX_RETRY_ATTEMPTS {
-                                    let delay = INITIAL_RETRY_DELAY_MS
-                                        * 2u64.saturating_pow(attempt.saturating_sub(1));
-                                    warn!(
-                                        "Could not get block at height {} (attempt {}/{}): {}. Retrying in {}ms...",
-                                        height, attempt, MAX_RETRY_ATTEMPTS, e, delay
-                                    );
-                                    thread::sleep(Duration::from_millis(delay));
-                                }
-                                last_error = Some(e);
-                                None
-                            }
-                        }
-                    });
-
-                    let block = match block {
-                        Some(b) => b,
-                        None => {
-                            // Cancelled by another thread's failure
-                            if cancel.load(Ordering::Relaxed) {
-                                return Ok(());
-                            }
-                            let e = last_error.unwrap();
-                            error!(
-                                "Failed to get block at height {} after {} attempts: {}",
-                                height, MAX_RETRY_ATTEMPTS, e
-                            );
+                    let what = format!("block at height {}", height);
+                    let block = match with_retry(&what, &cancel, || client.block(&hash)) {
+                        // Cancelled by another thread's failure
+                        Ok(None) => return Ok(()),
+                        Ok(Some(block)) => block,
+                        Err(e) => {
                             cancel.store(true, Ordering::Relaxed);
                             return Err(MainError::REST(e));
                         }

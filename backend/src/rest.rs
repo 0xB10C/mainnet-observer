@@ -1,6 +1,19 @@
+use bitcoin::block::Header;
 use bitcoin::{self, absolute::LockTime, block, Amount, BlockHash, ScriptBuf, Sequence, Weight};
 use serde::Deserialize;
+use std::str::FromStr;
 use std::{error, fmt};
+
+/// Bitcoin Core serves at most this many headers per `/rest/headers` request.
+pub const MAX_HEADERS_PER_REQUEST: usize = 2000;
+
+/// Size of a serialized block header in bytes.
+const HEADER_SIZE: usize = 80;
+
+/// Upper bound on the size of a block in its verbose JSON representation. The
+/// largest blocks on mainnet are well under this, but the JSON is roughly four
+/// times the size of the block itself, so ureq's 10 MB default is not enough.
+const MAX_BLOCK_JSON_SIZE: u64 = 50 * 1024 * 1024;
 
 pub struct RestClient {
     host: String,
@@ -202,6 +215,8 @@ pub enum RestError {
     Ureq(Box<ureq::Error>),
     IoError(std::io::Error),
     BitcoinDecode(bitcoin::consensus::encode::Error),
+    /// The node answered, but with something we can't make sense of.
+    Response(String),
 }
 
 impl fmt::Display for RestError {
@@ -210,6 +225,7 @@ impl fmt::Display for RestError {
             RestError::Ureq(e) => write!(f, "HTTP request error: {}", e),
             RestError::IoError(e) => write!(f, "IO error: {}", e),
             RestError::BitcoinDecode(e) => write!(f, "Bitcoin decode error: {:?}", e),
+            RestError::Response(msg) => write!(f, "Unexpected REST response: {}", msg),
         }
     }
 }
@@ -220,6 +236,7 @@ impl error::Error for RestError {
             RestError::Ureq(ref e) => Some(e),
             RestError::IoError(ref e) => Some(e),
             RestError::BitcoinDecode(ref e) => Some(e),
+            RestError::Response(_) => None,
         }
     }
 }
@@ -271,15 +288,50 @@ impl RestClient {
         Ok(resp.body_mut().read_json::<ChainInfo>()?)
     }
 
-    pub fn block_at_height(&self, height: u64) -> Result<Block, RestError> {
+    /// Returns the hash of the block at `height` on the active chain.
+    pub fn block_hash_at_height(&self, height: u64) -> Result<BlockHash, RestError> {
         let url = format!(
             "http://{}:{}/rest/blockhashbyheight/{}.hex",
             self.host, self.port, height
         );
         let mut resp = self.agent.get(&url).call()?;
-        let hash_str = resp.body_mut().read_to_string()?;
-        let hash = hash_str.trim();
+        let body = resp.body_mut().read_to_string()?;
+        BlockHash::from_str(body.trim()).map_err(|e| {
+            RestError::Response(format!("invalid block hash for height {}: {}", height, e))
+        })
+    }
 
+    /// Returns block headers starting with the block `start` and walking
+    /// towards the chain tip, at most [`MAX_HEADERS_PER_REQUEST`] of them.
+    ///
+    /// The first header returned is the one for `start` itself, so a walk
+    /// advances by one less than the number of headers it gets back.
+    pub fn headers(&self, start: &BlockHash, count: usize) -> Result<Vec<Header>, RestError> {
+        let url = format!(
+            "http://{}:{}/rest/headers/{}.bin?count={}",
+            self.host,
+            self.port,
+            start,
+            count.clamp(1, MAX_HEADERS_PER_REQUEST)
+        );
+        let mut resp = self.agent.get(&url).call()?;
+        let bytes = resp.body_mut().read_to_vec()?;
+        if bytes.len() % HEADER_SIZE != 0 {
+            return Err(RestError::Response(format!(
+                "headers response for {} is {} bytes, which isn't a multiple of {}",
+                start,
+                bytes.len(),
+                HEADER_SIZE
+            )));
+        }
+        bytes
+            .chunks_exact(HEADER_SIZE)
+            .map(|header| Ok(bitcoin::consensus::deserialize(header)?))
+            .collect()
+    }
+
+    /// Returns the block `hash` with transaction details and prevouts.
+    pub fn block(&self, hash: &BlockHash) -> Result<Block, RestError> {
         let url = format!(
             "http://{}:{}/rest/block/{}.json",
             self.host, self.port, hash
@@ -288,7 +340,7 @@ impl RestClient {
         Ok(resp
             .body_mut()
             .with_config()
-            .limit(50 * 1024 * 1024)
+            .limit(MAX_BLOCK_JSON_SIZE)
             .read_json()?)
     }
 }

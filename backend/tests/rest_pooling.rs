@@ -10,7 +10,7 @@ use std::sync::Arc;
 use std::thread;
 
 /// A minimal HTTP/1.1 server that keeps the connection open and answers the
-/// two endpoints `block_at_height()` uses.
+/// two endpoints a block fetch uses.
 fn serve(mut stream: TcpStream, block_json: Arc<String>) {
     let peer = stream.try_clone().unwrap();
     let mut reader = BufReader::new(peer);
@@ -77,9 +77,9 @@ fn keeps_connections_alive_between_requests() {
         let client = Arc::clone(&client);
         handles.push(thread::spawn(move || {
             for i in 0..BLOCKS_PER_THREAD {
-                client
-                    .block_at_height(t as u64 * BLOCKS_PER_THREAD + i)
-                    .expect("block");
+                let height = t as u64 * BLOCKS_PER_THREAD + i;
+                let hash = client.block_hash_at_height(height).expect("block hash");
+                client.block(&hash).expect("block");
             }
         }));
     }

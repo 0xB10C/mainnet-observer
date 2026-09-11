@@ -1,7 +1,9 @@
 use corepc_node as bitcoind;
 use diesel::SqliteConnection;
 use log::{error, info};
-use mainnet_observer_backend::{collect_statistics, db, write_csv_files, REORG_SAFETY_MARGIN};
+use mainnet_observer_backend::{
+    collect_statistics, db, stats, write_csv_files, REORG_SAFETY_MARGIN,
+};
 use rand::distr::{Alphanumeric, SampleString};
 use std::env;
 use std::fs;
@@ -239,4 +241,40 @@ fn test_collect_statistics_fails_on_block_fetch_retry_exhaustion() {
         }
         other => panic!("expected HTTP REST error after retry exhaustion, got: {other:?}"),
     }
+}
+
+/// The header walk asks Bitcoin Core for at most 2000 headers per request, so
+/// crossing that boundary is where an off-by-one in the walk would show up.
+/// Mine past it and check that every block we expect made it into the database,
+/// exactly once and under the right height.
+#[test]
+fn test_header_walk_across_multiple_requests() {
+    // Enough blocks that resolving their hashes takes more than one request.
+    const BLOCKS_TO_MINE: i64 = 2010;
+    init_logger();
+
+    let conn = setup_db();
+    let node = setup_node();
+
+    setup_chain(&node, BLOCKS_TO_MINE as usize);
+
+    let (rest_host, rest_port) = rest_host_and_port(&node);
+    if let Err(e) = collect_statistics(&rest_host, rest_port, Arc::clone(&conn), 4, None) {
+        panic!("Failed to collect statistics: {:?}", e);
+    }
+
+    // The regtest network starts out with 0 blocks, so mining n blocks ends at
+    // height n-1.
+    const OFFSET: i64 = 1;
+    let expected: Vec<i64> = (0..=BLOCKS_TO_MINE - OFFSET - REORG_SAFETY_MARGIN as i64).collect();
+
+    let mut conn = conn.lock().unwrap();
+    let mut stored = db::block_heights_greater_equals_version(&mut conn, stats::STATS_VERSION)
+        .expect("read block heights");
+    stored.sort_unstable();
+
+    assert_eq!(
+        expected, stored,
+        "the heights in the database don't match the blocks that were mined"
+    );
 }
