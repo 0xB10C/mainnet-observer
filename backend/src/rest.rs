@@ -243,11 +243,25 @@ impl From<bitcoin::consensus::encode::Error> for RestError {
 }
 
 impl RestClient {
-    pub fn new(host: &str, port: u16) -> RestClient {
+    /// Creates a new client for the Bitcoin Core REST interface on
+    /// `host`:`port`.
+    ///
+    /// `num_threads` is the number of threads sharing this client. The idle
+    /// connection pool is sized to match, so each thread can keep its
+    /// connection to Bitcoin Core alive between requests. With ureq's defaults
+    /// (ten idle connections, three per host) most connections would be torn
+    /// down right after use and reopened for the next request, which adds up:
+    /// a full sync makes two requests per block.
+    pub fn new(host: &str, port: u16, num_threads: usize) -> RestClient {
+        let max_idle = num_threads.max(1);
+        let config = ureq::Agent::config_builder()
+            .max_idle_connections(max_idle)
+            .max_idle_connections_per_host(max_idle)
+            .build();
         RestClient {
             host: host.to_string(),
             port,
-            agent: ureq::agent(),
+            agent: config.into(),
         }
     }
 

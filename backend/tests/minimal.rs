@@ -233,7 +233,7 @@ fn test_collect_statistics_fails_on_block_fetch_retry_exhaustion() {
     match result {
         Err(mainnet_observer_backend::MainError::REST(e)) => {
             assert!(
-                e.to_string().contains("HTTP error: 500"),
+                e.to_string().contains("http status: 500"),
                 "expected HTTP 500 from mock REST server, got: {e}"
             );
         }

@@ -150,7 +150,7 @@ pub fn collect_statistics(
 ) -> Result<(), MainError> {
     let connection = Arc::clone(&connection);
 
-    let client = rest::RestClient::new(rest_host, rest_port);
+    let client = rest::RestClient::new(rest_host, rest_port, num_threads);
     let chain_info = match client.chain_info() {
         Ok(chain_info) => chain_info,
         Err(e) => {
