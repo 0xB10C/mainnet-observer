@@ -14,7 +14,7 @@ use statrs::statistics::Data;
 use statrs::statistics::OrderStatistics;
 use std::{collections::HashSet, error, fmt, num::ParseIntError};
 
-use crate::rest::{Block, InputData, ScriptPubkeyType};
+use crate::rest::{Block, ScriptPubkeyType};
 
 const UNKNOWN_POOL_ID: i32 = 0;
 const P2A_DUST_THRESHOLD: u64 = 240;
@@ -452,12 +452,9 @@ impl TxStats {
 
             let mut tx_spending_newly_created_utxos = false;
             let mut tx_spending_ephemeral_dust = false;
-            for (txid, vout) in tx.input.iter().filter_map(|i| {
-                if let InputData::NonCoinbase { txid, vout, .. } = &i.data {
-                    Some((txid, vout))
-                } else {
-                    None
-                }
+            for (txid, vout) in tx.input.iter().filter_map(|i| match (&i.txid, &i.vout) {
+                (Some(txid), Some(vout)) => Some((txid, vout)),
+                _ => None,
             }) {
                 tx_spending_newly_created_utxos |= txids_in_this_block.contains(txid);
                 tx_spending_ephemeral_dust |= ephemeral_dust_outpoints_in_this_block
@@ -775,7 +772,8 @@ impl InputStats {
                 }
             }
             for input in tx.input.iter() {
-                let InputData::NonCoinbase { txid, prevout, .. } = &input.data else {
+                let (Some(txid), Some(prevout)) = (&input.txid, &input.prevout) else {
+                    // coinbase input
                     continue;
                 };
                 // prevout.height=0 for same-block UTXOs, so use the txid check to detect age=0.

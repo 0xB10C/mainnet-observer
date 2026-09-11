@@ -1,7 +1,4 @@
-use bitcoin::{
-    self, absolute::LockTime, address::NetworkUnchecked, block, Address, Amount, BlockHash,
-    ScriptBuf, Sequence, TxMerkleNode, Weight, Witness,
-};
+use bitcoin::{self, absolute::LockTime, block, Amount, BlockHash, ScriptBuf, Sequence, Weight};
 use serde::Deserialize;
 use std::{error, fmt};
 
@@ -17,20 +14,68 @@ pub struct ChainInfo {
     pub blocks: u64,
 }
 
+/// Decodes a hex string into `T` without allocating an intermediate `String`.
 pub mod serde_hex {
     use bitcoin::hex::FromHex;
-    use serde::{de::Error, Deserialize, Deserializer};
+    use serde::de::{Error, Visitor};
+    use serde::Deserializer;
+    use std::fmt;
+    use std::marker::PhantomData;
+
+    struct HexVisitor<T>(PhantomData<T>);
+
+    impl<'de, T: FromHex> Visitor<'de> for HexVisitor<T> {
+        type Value = T;
+
+        fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            f.write_str("a hex string")
+        }
+
+        fn visit_str<E: Error>(self, v: &str) -> Result<T, E> {
+            T::from_hex(v).map_err(E::custom)
+        }
+    }
 
     pub fn deserialize<'de, D: Deserializer<'de>, T: FromHex>(d: D) -> Result<T, D::Error> {
-        let hex_str: String = Deserialize::deserialize(d)?;
-        T::from_hex(&hex_str).map_err(D::Error::custom)
+        d.deserialize_str(HexVisitor(PhantomData))
     }
-}
 
-#[derive(Deserialize)]
-pub struct ScriptSig {
-    #[serde(rename = "hex")]
-    pub script: ScriptBuf,
+    pub mod opt {
+        use super::HexVisitor;
+        use bitcoin::hex::FromHex;
+        use serde::de::{Error, Visitor};
+        use serde::Deserializer;
+        use std::fmt;
+        use std::marker::PhantomData;
+
+        struct OptHexVisitor<T>(PhantomData<T>);
+
+        impl<'de, T: FromHex> Visitor<'de> for OptHexVisitor<T> {
+            type Value = Option<T>;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("an optional hex string")
+            }
+
+            fn visit_none<E: Error>(self) -> Result<Option<T>, E> {
+                Ok(None)
+            }
+
+            fn visit_unit<E: Error>(self) -> Result<Option<T>, E> {
+                Ok(None)
+            }
+
+            fn visit_some<D: Deserializer<'de>>(self, d: D) -> Result<Option<T>, D::Error> {
+                d.deserialize_str(HexVisitor(PhantomData)).map(Some)
+            }
+        }
+
+        pub fn deserialize<'de, D: Deserializer<'de>, T: FromHex>(
+            d: D,
+        ) -> Result<Option<T>, D::Error> {
+            d.deserialize_option(OptHexVisitor(PhantomData))
+        }
+    }
 }
 
 #[allow(non_camel_case_types)]
@@ -54,43 +99,45 @@ pub enum ScriptPubkeyType {
 pub struct ScriptPubKey {
     #[serde(rename = "hex")]
     pub script: ScriptBuf,
-    #[serde(rename = "desc")]
-    pub descriptor: Option<String>,
     #[serde(rename = "type")]
     pub type_: ScriptPubkeyType,
-    pub address: Option<Address<NetworkUnchecked>>,
+}
+
+/// The script_pub_key of a prevout. Unlike an output's script_pub_key, we only
+/// need the type here, so the script itself isn't hex-decoded.
+#[derive(Deserialize)]
+pub struct PrevoutScriptPubKey {
+    #[serde(rename = "type")]
+    pub type_: ScriptPubkeyType,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Prevout {
-    pub generated: bool,
     pub height: i64,
     #[serde(with = "bitcoin::amount::serde::as_btc")]
     pub value: Amount,
-    pub script_pub_key: ScriptPubKey,
+    pub script_pub_key: PrevoutScriptPubKey,
 }
 
-#[derive(Deserialize)]
-pub enum InputData {
-    #[serde(rename = "coinbase", with = "serde_hex")]
-    Coinbase(Vec<u8>),
-    #[serde(untagged, rename_all = "camelCase")]
-    NonCoinbase {
-        txid: bitcoin::Txid,
-        vout: u32,
-        script_sig: ScriptSig,
-        prevout: Prevout,
-    },
-}
-
+/// An input of a transaction. A coinbase input has `coinbase` set, every other
+/// input has `txid` and `prevout` set.
+///
+/// These are deliberately kept as plain `Option` fields rather than as an enum
+/// behind `#[serde(flatten)]`: flattening and untagged enums force serde to
+/// buffer every field of every input into an intermediate representation before
+/// it can pick a variant, which costs more than the fields themselves.
 #[derive(Deserialize)]
 pub struct Input {
     pub sequence: Sequence,
-    #[serde(rename = "txinwitness")]
-    pub witness: Option<Witness>,
-    #[serde(flatten)]
-    pub data: InputData,
+    #[serde(default, with = "serde_hex::opt")]
+    pub coinbase: Option<Vec<u8>>,
+    #[serde(default)]
+    pub txid: Option<bitcoin::Txid>,
+    #[serde(default)]
+    pub vout: Option<u32>,
+    #[serde(default)]
+    pub prevout: Option<Prevout>,
 }
 
 #[derive(Deserialize)]
@@ -102,15 +149,20 @@ pub struct Output {
     pub script_pub_key: ScriptPubKey,
 }
 
+/// A transaction as returned by the REST interface.
+///
+/// Only fields that aren't already contained in `raw` are deserialized here.
+/// Everything else is read from the transaction parsed out of `raw`, which is
+/// far cheaper than parsing it out of the JSON a second time. The notable
+/// exceptions are `fee` and the `prevout`s, which the raw transaction doesn't
+/// carry.
 #[derive(Deserialize)]
 pub struct Transaction {
     #[serde(rename = "hex", with = "serde_hex")]
     pub raw: Vec<u8>,
     pub txid: bitcoin::Txid,
-    pub hash: bitcoin::Wtxid,
     pub size: u32,
     pub vsize: u32,
-    pub weight: Weight,
     pub version: u32,
     #[serde(default, with = "bitcoin::amount::serde::as_btc::opt")]
     pub fee: Option<Amount>,
@@ -129,33 +181,19 @@ impl Transaction {
 }
 
 #[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
 pub struct Block {
     pub hash: BlockHash,
-    pub confirmations: i64,
     pub size: i64,
     #[serde(rename = "strippedsize")]
     pub stripped_size: i64,
     pub weight: Weight,
     pub height: i64,
     pub version: block::Version,
-    #[serde(rename = "merkleroot")]
-    pub merkle_root: TxMerkleNode,
     #[serde(rename = "tx")]
     pub txdata: Vec<Transaction>,
     pub time: u32,
-    #[serde(rename = "mediantime")]
-    pub median_time: u32,
     pub nonce: u32,
     pub bits: String,
-    pub difficulty: f64,
-    #[serde(rename = "chainwork", with = "serde_hex")]
-    pub chain_work: Vec<u8>,
-    pub n_tx: u32,
-    #[serde(rename = "previousblockhash")]
-    pub previous_block_hash: Option<BlockHash>,
-    #[serde(rename = "nextblockhash")]
-    pub next_block_hash: Option<BlockHash>,
 }
 
 #[derive(Debug)]
