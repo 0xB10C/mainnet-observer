@@ -3,6 +3,7 @@ mod gen_csv;
 pub mod rest;
 mod schema;
 pub mod stats;
+pub mod timings;
 
 use clap::Parser;
 use diesel::SqliteConnection;
@@ -14,7 +15,7 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use std::{error, fmt, io, thread};
 
 const DATABASE_BATCH_SIZE: usize = 100;
@@ -203,16 +204,21 @@ pub fn collect_statistics(
     let (block_sender, block_receiver) = mpsc::sync_channel(10);
     let (stat_sender, stat_receiver) = mpsc::sync_channel(100);
 
+    let timings = Arc::new(timings::Timings::default());
+    let pipeline_started = Instant::now();
+
     // get-blocks task
     // gets blocks from the Bitcoin Core REST interface and sends them onwards
     // to the `calc-stats` task
+    let fetch_timings = Arc::clone(&timings);
     let get_blocks_task = thread::spawn(move || -> Result<(), MainError> {
+        let task_started = Instant::now();
         let pool = rayon::ThreadPoolBuilder::new()
             .num_threads(num_threads)
             .build()
             .unwrap();
         let cancel = AtomicBool::new(false);
-        pool.install(|| {
+        let result = pool.install(|| {
             heights_to_fetch.par_iter()
                 .try_for_each(|&height| {
                     // Fast exit if another thread already failed
@@ -229,7 +235,17 @@ pub fn collect_statistics(
                             return None;
                         }
                         match client.block_at_height(height as u64) {
-                            Ok(block) => Some(block),
+                            Ok((block, timing)) => {
+                                timings::record(&fetch_timings.hash_request, timing.hash_request);
+                                timings::record(&fetch_timings.block_first_byte, timing.first_byte);
+                                timings::record(&fetch_timings.block_body, timing.body);
+                                timings::record(&fetch_timings.block_parse, timing.parse);
+                                fetch_timings
+                                    .block_bytes
+                                    .fetch_add(timing.bytes as u64, Ordering::Relaxed);
+                                fetch_timings.blocks.fetch_add(1, Ordering::Relaxed);
+                                Some(block)
+                            }
                             Err(e) => {
                                 if attempt < MAX_RETRY_ATTEMPTS {
                                     let delay = INITIAL_RETRY_DELAY_MS
@@ -262,7 +278,10 @@ pub fn collect_statistics(
                             return Err(MainError::REST(e));
                         }
                     };
-                    if block_sender.send((height, block)).is_err() {
+                    let send_started = Instant::now();
+                    let send_result = block_sender.send((height, block));
+                    timings::record(&fetch_timings.block_send_blocked, send_started.elapsed());
+                    if send_result.is_err() {
                         warn!(
                             "during sending block at height {} to stats generator: block receiver dropped",
                             height
@@ -274,18 +293,32 @@ pub fn collect_statistics(
                     }
                     Ok(())
                 })
-        })
+        });
+        timings::record(&fetch_timings.get_blocks_wall, task_started.elapsed());
+        result
     });
 
     // calc-stats task
     // calculates the per block stats and sends them onwards to the batch-insert
     // task
+    let stats_timings = Arc::clone(&timings);
     let calc_stats_task = thread::spawn(move || -> Result<(), MainError> {
-        while let Ok((height, block)) = block_receiver.recv() {
+        let task_started = Instant::now();
+        loop {
+            let recv_started = Instant::now();
+            let received = block_receiver.recv();
+            timings::record(&stats_timings.block_recv_blocked, recv_started.elapsed());
+            let Ok((height, block)) = received else {
+                break;
+            };
+
             debug!("calc-stats: processing block at height {}..", height);
             let stat_sender_clone = stat_sender.clone();
+            let worker_timings = Arc::clone(&stats_timings);
             rayon::spawn(move || {
+                let compute_started = Instant::now();
                 let stats_result = Stats::from_block(block);
+                timings::record(&worker_timings.stats_compute, compute_started.elapsed());
                 if let Err(e) = stats_result {
                     error!(
                         "Could not calculate stats for block at height {}: {}",
@@ -299,7 +332,10 @@ pub fn collect_statistics(
                         MainError::Stats(e)
                     );
                 };
-                if let Err(e) = stat_sender_clone.send(stats_result) {
+                let send_started = Instant::now();
+                let send_result = stat_sender_clone.send(stats_result);
+                timings::record(&worker_timings.stats_send_blocked, send_started.elapsed());
+                if let Err(e) = send_result {
                     // We can't continue here..
                     panic!(
                         "during sending stats at height {} to db writer: stats receiver dropped: {}",
@@ -313,12 +349,15 @@ pub fn collect_statistics(
         // Reaching this point doesn't mean we're done processing all block just yet
         // We might still be processing some..
         debug!("calc-stats: received all blocks and started processing them..");
+        timings::record(&stats_timings.calc_stats_wall, task_started.elapsed());
         Ok(())
     });
 
     // batch-insert task
     // inserts the block stats in batches
+    let insert_timings = Arc::clone(&timings);
     let batch_insert_task = thread::spawn(move || -> Result<(), MainError> {
+        let task_started = Instant::now();
         let connection = Arc::clone(&connection);
         let mut conn = connection.lock().unwrap();
         db::performance_tune(&mut conn)?;
@@ -326,7 +365,9 @@ pub fn collect_statistics(
         let mut written = 0;
 
         loop {
+            let recv_started = Instant::now();
             let stat_recv_result = stat_receiver.recv();
+            timings::record(&insert_timings.stats_recv_blocked, recv_started.elapsed());
             let stat = match stat_recv_result {
                 Ok(stat_result) => match stat_result {
                     Ok(stat) => stat,
@@ -343,7 +384,10 @@ pub fn collect_statistics(
 
             stat_buffer.push(stat);
             if stat_buffer.len() >= DATABASE_BATCH_SIZE {
+                let insert_started = Instant::now();
                 db::insert_stats(&mut conn, &stat_buffer)?;
+                timings::record(&insert_timings.db_insert, insert_started.elapsed());
+                insert_timings.batches.fetch_add(1, Ordering::Relaxed);
                 written += stat_buffer.len();
                 info!(
                     "written {} out of {} block stats to database ({:0.2}%)",
@@ -362,10 +406,14 @@ pub fn collect_statistics(
                 "collect-statistics: writing the final batch of {} block-stats to database",
                 stat_buffer.len()
             );
+            let insert_started = Instant::now();
             db::insert_stats(&mut conn, &stat_buffer)?;
+            timings::record(&insert_timings.db_insert, insert_started.elapsed());
+            insert_timings.batches.fetch_add(1, Ordering::Relaxed);
         } else {
             info!("collect-statistics: no new blocks to insert.");
         }
+        timings::record(&insert_timings.batch_insert_wall, task_started.elapsed());
         Ok(())
     });
 
@@ -380,6 +428,12 @@ pub fn collect_statistics(
     let batch_insert_result = batch_insert_task
         .join()
         .expect("The batch-insert task thread panicked");
+
+    timings.report(
+        pipeline_started.elapsed(),
+        num_threads,
+        rayon::current_num_threads(),
+    );
 
     get_blocks_result?;
     calc_stats_result?;

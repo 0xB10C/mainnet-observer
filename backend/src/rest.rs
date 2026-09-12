@@ -1,6 +1,27 @@
 use bitcoin::{self, absolute::LockTime, block, Amount, BlockHash, ScriptBuf, Sequence, Weight};
 use serde::Deserialize;
+use std::time::{Duration, Instant};
 use std::{error, fmt};
+
+/// Upper bound on the size of a block in its verbose JSON representation. The
+/// JSON is several times the size of the block itself, so ureq's 10 MB default
+/// isn't enough.
+const MAX_BLOCK_JSON_SIZE: u64 = 50 * 1024 * 1024;
+
+/// Where the time went while fetching a single block.
+#[derive(Default, Debug)]
+pub struct FetchTiming {
+    /// Looking up the block hash for a height.
+    pub hash_request: Duration,
+    /// Between asking for the block and Bitcoin Core starting to answer.
+    pub first_byte: Duration,
+    /// Receiving the block JSON, which is also Bitcoin Core serializing it.
+    pub body: Duration,
+    /// Deserializing the block JSON.
+    pub parse: Duration,
+    /// Size of the block JSON in bytes.
+    pub bytes: usize,
+}
 
 pub struct RestClient {
     host: String,
@@ -202,6 +223,8 @@ pub enum RestError {
     Ureq(Box<ureq::Error>),
     IoError(std::io::Error),
     BitcoinDecode(bitcoin::consensus::encode::Error),
+    /// The node answered, but with something we could not make sense of.
+    Response(String),
 }
 
 impl fmt::Display for RestError {
@@ -210,6 +233,7 @@ impl fmt::Display for RestError {
             RestError::Ureq(e) => write!(f, "HTTP request error: {}", e),
             RestError::IoError(e) => write!(f, "IO error: {}", e),
             RestError::BitcoinDecode(e) => write!(f, "Bitcoin decode error: {:?}", e),
+            RestError::Response(msg) => write!(f, "Unexpected REST response: {}", msg),
         }
     }
 }
@@ -220,6 +244,7 @@ impl error::Error for RestError {
             RestError::Ureq(ref e) => Some(e),
             RestError::IoError(ref e) => Some(e),
             RestError::BitcoinDecode(ref e) => Some(e),
+            RestError::Response(_) => None,
         }
     }
 }
@@ -271,7 +296,16 @@ impl RestClient {
         Ok(resp.body_mut().read_json::<ChainInfo>()?)
     }
 
-    pub fn block_at_height(&self, height: u64) -> Result<Block, RestError> {
+    /// Gets the block at `height`, along with a breakdown of where the time
+    /// went.
+    ///
+    /// The body is read into memory before it's deserialized, rather than
+    /// deserialized straight off the socket, so that waiting for Bitcoin Core
+    /// can be told apart from our own parsing.
+    pub fn block_at_height(&self, height: u64) -> Result<(Block, FetchTiming), RestError> {
+        let mut timing = FetchTiming::default();
+
+        let start = Instant::now();
         let url = format!(
             "http://{}:{}/rest/blockhashbyheight/{}.hex",
             self.host, self.port, height
@@ -279,16 +313,33 @@ impl RestClient {
         let mut resp = self.agent.get(&url).call()?;
         let hash_str = resp.body_mut().read_to_string()?;
         let hash = hash_str.trim();
+        timing.hash_request = start.elapsed();
 
+        let start = Instant::now();
         let url = format!(
             "http://{}:{}/rest/block/{}.json",
             self.host, self.port, hash
         );
+        // `call()` returns once the response headers are in, so this is how
+        // long Bitcoin Core took before it started answering.
         let mut resp = self.agent.get(&url).call()?;
-        Ok(resp
+        timing.first_byte = start.elapsed();
+
+        let start = Instant::now();
+        let body = resp
             .body_mut()
             .with_config()
-            .limit(50 * 1024 * 1024)
-            .read_json()?)
+            .limit(MAX_BLOCK_JSON_SIZE)
+            .read_to_vec()?;
+        timing.body = start.elapsed();
+        timing.bytes = body.len();
+
+        let start = Instant::now();
+        let block = serde_json::from_slice(&body).map_err(|e| {
+            RestError::Response(format!("block {} at height {}: {}", hash, height, e))
+        })?;
+        timing.parse = start.elapsed();
+
+        Ok((block, timing))
     }
 }
