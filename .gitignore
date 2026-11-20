@@ -14,3 +14,7 @@ target/
 frontend/public
 
 .DS_Store
+
+# coverage and mutation testing output
+mutants.out/
+lcov.info
