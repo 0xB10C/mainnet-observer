@@ -610,14 +610,16 @@ impl ScriptStats {
                             s.sigs_ecdsa_not_strict_der += 1;
                         }
                         match sig.length {
-                            8..=69 => s.sigs_ecdsa_length_less_70byte += 1,
+                            // rawtx-rs never hands us a signature shorter than
+                            // nine bytes, but a strange signature is still a
+                            // short one and must not take the stats down.
+                            ..=69 => s.sigs_ecdsa_length_less_70byte += 1,
                             70 => s.sigs_ecdsa_length_70byte += 1,
                             71 => s.sigs_ecdsa_length_71byte += 1,
                             72 => s.sigs_ecdsa_length_72byte += 1,
                             73 => s.sigs_ecdsa_length_73byte += 1,
                             74 => s.sigs_ecdsa_length_74byte += 1,
                             75.. => s.sigs_ecdsa_length_75byte_or_more += 1,
-                            _ => panic!("ECDSA signature with {} bytes..?", sig.length),
                         }
 
                         let is_r_low = sig.low_r();
