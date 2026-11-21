@@ -370,8 +370,8 @@ pub fn pools_mining_bip54_coinbase_csv(
                 pool_names
                     .get(&(row.pool_id as u64))
                     .unwrap_or(&"Unknown".to_string()),
-                row.first_bip54_coibnase_height,
-                row.first_bip54_coibnase_date,
+                row.first_bip54_coinbase_height,
+                row.first_bip54_coinbase_date,
                 row.count,
             )
         })
