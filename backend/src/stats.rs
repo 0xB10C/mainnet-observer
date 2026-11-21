@@ -2497,4 +2497,99 @@ mod tests {
         let block = synthetic_block(800_000, vec![simple_coinbase(1)]);
         assert_eq!(block_stats_with(&block, 4_711, &[]).sigops, 4_711);
     }
+
+    // ---------------------------------------------------------------------
+    // TxStats: versions and transaction shape
+    // ---------------------------------------------------------------------
+
+    fn tx_stats(block: &Block) -> TxStats {
+        let (tx_infos, txns) = decode(block);
+        TxStats::from_block(block, "date".to_string(), &tx_infos, &txns)
+    }
+
+    /// A transaction spending one made up output, with `version`, `lock_time`
+    /// and `sequence` as given.
+    fn simple_spend(version: i32, lock_time: u32, sequence: Sequence, nth: u8) -> RestTx {
+        let tx = spending_tx(
+            version,
+            lock_time,
+            &[(OutPoint::new(fake_txid(nth), 0), sequence)],
+            &[(10_000, p2wpkh_script(nth))],
+        );
+        rest_tx(
+            &tx,
+            Some(Amount::from_sat(1_000)),
+            vec![Some(prevout(
+                1,
+                11_000,
+                ScriptPubkeyType::Witness_v0_KeyHash,
+            ))],
+        )
+    }
+
+    #[test]
+    fn transactions_are_counted_per_version() {
+        let block = synthetic_block(
+            100_000,
+            vec![
+                // the coinbase is a version 1 transaction
+                simple_coinbase(1),
+                simple_spend(1, 0, Sequence::MAX, 1),
+                simple_spend(2, 0, Sequence::MAX, 2),
+                simple_spend(3, 0, Sequence::MAX, 3),
+                simple_spend(4, 0, Sequence::MAX, 4),
+            ],
+        );
+        let stats = tx_stats(&block);
+        assert_eq!(stats.tx_version_1, 2);
+        assert_eq!(stats.tx_version_2, 1);
+        assert_eq!(stats.tx_version_3, 1);
+        assert_eq!(stats.tx_version_unknown, 1);
+    }
+
+    #[test]
+    fn transactions_are_counted_by_their_number_of_inputs_and_outputs() {
+        let one_in_two_out = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(2), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(1)), (1_000, p2wpkh_script(2))],
+        );
+        let one_in_three_out = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(3), 0), Sequence::MAX)],
+            &[
+                (1_000, p2wpkh_script(1)),
+                (1_000, p2wpkh_script(2)),
+                (1_000, p2wpkh_script(3)),
+            ],
+        );
+        let two_in_one_out = spending_tx(
+            2,
+            0,
+            &[
+                (OutPoint::new(fake_txid(4), 0), Sequence::MAX),
+                (OutPoint::new(fake_txid(5), 0), Sequence::MAX),
+            ],
+            &[(1_000, p2wpkh_script(1))],
+        );
+        let fee = Some(Amount::from_sat(1_000));
+        let block = synthetic_block(
+            100_000,
+            vec![
+                // the coinbase has one input and one output
+                simple_coinbase(1),
+                simple_spend(2, 0, Sequence::MAX, 1),
+                rest_tx(&one_in_two_out, fee, vec![None]),
+                rest_tx(&one_in_three_out, fee, vec![None]),
+                rest_tx(&two_in_one_out, fee, vec![None, None]),
+            ],
+        );
+        let stats = tx_stats(&block);
+        assert_eq!(stats.tx_1_input, 4);
+        assert_eq!(stats.tx_1_output, 3);
+        assert_eq!(stats.tx_1_input_1_output, 2);
+        assert_eq!(stats.tx_1_input_2_output, 1);
+    }
 }
