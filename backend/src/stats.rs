@@ -2683,4 +2683,124 @@ mod tests {
         );
         assert_eq!(tx_stats(&block).tx_timelock_too_high, 0);
     }
+
+    // ---------------------------------------------------------------------
+    // TxStats: ephemeral dust
+    // ---------------------------------------------------------------------
+
+    /// A block with a zero-fee version 3 parent that creates a dust output and
+    /// a version 3 child paying a fee that spends it. `other_output_sat` is
+    /// the value of the parent's other output; with 10_000 sat the parent has
+    /// exactly one dust output, which is what the rule asks for.
+    fn ephemeral_dust_block(other_output_sat: u64) -> Block {
+        ephemeral_dust_block_spending(other_output_sat, 1)
+    }
+
+    /// The same block, with the child spending the parent's output `vout`.
+    /// The dust is in output 1, the other output is output 0, so a test can
+    /// tell the two apart.
+    fn ephemeral_dust_block_spending(other_output_sat: u64, vout: u32) -> Block {
+        let parent = spending_tx(
+            3,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[
+                (other_output_sat, p2wpkh_script(2)),
+                // 1 sat into a P2WPKH output, which is dust below 294 sat
+                (1, p2wpkh_script(1)),
+            ],
+        );
+        let child = spending_tx(
+            3,
+            0,
+            &[(OutPoint::new(parent.compute_txid(), vout), Sequence::MAX)],
+            &[(900, p2wpkh_script(3))],
+        );
+        synthetic_block(
+            100_000,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&parent, Some(Amount::ZERO), vec![None]),
+                rest_tx(&child, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_child_spending_ephemeral_dust_is_counted() {
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block(10_000)).tx_spending_ephemeral_dust,
+            1
+        );
+    }
+
+    #[test]
+    fn unspent_ephemeral_dust_is_not_counted() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata.pop();
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_the_child_to_spend_the_dust_output() {
+        // the child spends the parent's other output and leaves the dust alone
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block_spending(10_000, 0)).tx_spending_ephemeral_dust,
+            0
+        );
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_version_3_parent() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[1].version = 2;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_parent_without_a_fee() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[1].fee = Some(Amount::from_sat(1));
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_parent_of_at_most_10000_vbyte() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[1].vsize = 10_000;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 1);
+        block.txdata[1].vsize = 10_001;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_parent_with_a_single_dust_output() {
+        // a second dust output: the parent was likely handed to a miner
+        // out-of-band rather than submitted over the p2p network
+        let block = ephemeral_dust_block(1);
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_version_3_child() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].version = 2;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_child_paying_a_fee() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].fee = Some(Amount::ZERO);
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_child_of_at_most_1000_vbyte() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].vsize = 1_000;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 1);
+        block.txdata[2].vsize = 1_001;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
 }
