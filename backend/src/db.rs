@@ -99,34 +99,41 @@ pub fn list_column_names(
     sql_query(format!("PRAGMA table_info({})", table)).get_results(conn)
 }
 
+/// Returns the average and the sum of a column for each date.
+///
+/// The frontend joins the resulting CSV file with date.csv by row position, so
+/// the rows must be in the same order as the ones of [`date_column()`].
 pub fn column_sum_and_avg_by_date(
     conn: &mut SqliteConnection,
     colname: &str,
     table: &str,
-) -> Vec<AvgAndSum> {
+) -> Result<Vec<AvgAndSum>, diesel::result::Error> {
     sql_query(format!(
-        "SELECT avg({}) as avg, sum({}) as sum FROM {} GROUP BY date",
+        "SELECT avg({}) as avg, sum({}) as sum FROM {} GROUP BY date ORDER BY date",
         colname, colname, table
     ))
     .get_results(conn)
-    .unwrap()
 }
 
-pub fn coinbase_subsidy_and_fees_avg_by_date(conn: &mut SqliteConnection) -> Vec<SubsidyAndFees> {
+/// Returns the average coinbase subsidy and the average coinbase fees for each
+/// date, in the same order as [`date_column()`].
+pub fn coinbase_subsidy_and_fees_avg_by_date(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<SubsidyAndFees>, diesel::result::Error> {
     sql_query(
         "SELECT \
          avg(5000000000 >> (height / 210000)) as subsidy_avg, \
          avg(coinbase_output_amount - (5000000000 >> (height / 210000))) as fees_avg \
-         FROM block_stats GROUP BY date",
+         FROM block_stats GROUP BY date ORDER BY date",
     )
     .get_results(conn)
-    .unwrap()
 }
 
-pub fn date_column(conn: &mut SqliteConnection) -> Vec<DateColumn> {
-    sql_query("SELECT date as date FROM block_stats GROUP BY date".to_string())
+/// Returns every date that has at least one block, sorted ascending. This is
+/// the date column the metric CSV files are joined with by row position.
+pub fn date_column(conn: &mut SqliteConnection) -> Result<Vec<DateColumn>, diesel::result::Error> {
+    sql_query("SELECT date as date FROM block_stats GROUP BY date ORDER BY date".to_string())
         .get_results(conn)
-        .unwrap()
 }
 
 #[derive(Debug, QueryableByName)]
@@ -581,7 +588,9 @@ pub fn get_blocks_per_day_per_pool(
         WHERE
             b."pool_id" = {}
         GROUP BY
-            b.date, t.total;
+            b.date, t.total
+        ORDER BY
+            b.date;
         "#,
         id
     ))

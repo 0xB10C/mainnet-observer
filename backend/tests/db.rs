@@ -227,6 +227,7 @@ fn date_column_lists_every_date_once_and_sorted() {
         ],
     );
     let dates: Vec<String> = db::date_column(&mut conn)
+        .unwrap()
         .into_iter()
         .map(|d| d.date)
         .collect();
@@ -244,7 +245,7 @@ fn column_sum_and_avg_by_date_aggregates_per_date() {
     third.block.transactions = 7;
     insert_rows(&mut conn, &[first, second, third]);
 
-    let rows = db::column_sum_and_avg_by_date(&mut conn, "transactions", "block_stats");
+    let rows = db::column_sum_and_avg_by_date(&mut conn, "transactions", "block_stats").unwrap();
     assert_eq!(rows.len(), 2);
     assert_eq!(rows[0].sum, 30);
     assert_eq!(rows[0].avg, 15.0);
@@ -265,7 +266,7 @@ fn column_sum_and_avg_by_date_counts_blocks_per_day() {
     );
     // block_count defaults to 1 for every row, so its sum is the number of
     // blocks of that day.
-    let rows = db::column_sum_and_avg_by_date(&mut conn, "block_count", "block_stats");
+    let rows = db::column_sum_and_avg_by_date(&mut conn, "block_count", "block_stats").unwrap();
     assert_eq!(rows.iter().map(|r| r.sum).collect::<Vec<i64>>(), vec![2, 1]);
 }
 
@@ -282,7 +283,7 @@ fn coinbase_subsidy_halves_at_the_halving_height() {
     second_halving.block.coinbase_output_amount = 1_250_000_000;
     insert_rows(&mut conn, &[before, after, second_halving]);
 
-    let rows = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn);
+    let rows = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn).unwrap();
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[0].subsidy_avg, 5_000_000_000.0);
     assert_eq!(rows[0].fees_avg, 12_345.0);
@@ -317,6 +318,7 @@ fn per_date_queries_all_return_the_same_dates_in_the_same_order() {
     sorted_dates.sort();
 
     let date_column: Vec<String> = db::date_column(&mut conn)
+        .unwrap()
         .into_iter()
         .map(|d| d.date)
         .collect();
@@ -333,7 +335,7 @@ fn per_date_queries_all_return_the_same_dates_in_the_same_order() {
             if column == "date" || column == "hash" {
                 continue;
             }
-            let rows = db::column_sum_and_avg_by_date(&mut conn, column, table);
+            let rows = db::column_sum_and_avg_by_date(&mut conn, column, table).unwrap();
             assert_eq!(
                 rows.len(),
                 date_column.len(),
@@ -349,7 +351,7 @@ fn per_date_queries_all_return_the_same_dates_in_the_same_order() {
     // Each date has exactly one block here and the heights are unique, so the
     // summed height of a group tells us which date the row belongs to.
     for table in ["block_stats", "tx_stats", "input_stats"] {
-        let heights = db::column_sum_and_avg_by_date(&mut conn, "height", table);
+        let heights = db::column_sum_and_avg_by_date(&mut conn, "height", table).unwrap();
         let dates_of_rows: Vec<String> = heights
             .iter()
             .map(|r| dates[(r.sum - 1000) as usize].to_string())
@@ -361,7 +363,7 @@ fn per_date_queries_all_return_the_same_dates_in_the_same_order() {
         );
     }
 
-    let subsidy = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn);
+    let subsidy = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn).unwrap();
     assert_eq!(subsidy.len(), date_column.len());
 
     let signaling = db::blocks_signaling_version_bit_per_day(&mut conn, 4).unwrap();
@@ -800,10 +802,10 @@ fn insert_stats_replaces_a_row_with_the_same_height() {
             table
         );
     }
-    let rows = db::column_sum_and_avg_by_date(&mut conn, "transactions", "block_stats");
+    let rows = db::column_sum_and_avg_by_date(&mut conn, "transactions", "block_stats").unwrap();
     assert_eq!(rows.len(), 1);
     assert_eq!(rows[0].sum, 7);
-    assert_eq!(db::date_column(&mut conn)[0].date, "2024-01-02");
+    assert_eq!(db::date_column(&mut conn).unwrap()[0].date, "2024-01-02");
 }
 
 #[test]
