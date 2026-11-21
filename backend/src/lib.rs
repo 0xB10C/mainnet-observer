@@ -184,6 +184,11 @@ pub fn collect_statistics(
     };
     // 4. Filter out heights that are already up-to-date from all possible heights
     //    we could fetch. If start_height is set, skip blocks below it.
+    //    The range end is exclusive, so the last block we fetch is
+    //    `rest_height - REORG_SAFETY_MARGIN - 1`: the tip and the
+    //    REORG_SAFETY_MARGIN blocks below it are left alone, which is one
+    //    block more than the margin itself. See the test
+    //    `leaves_the_reorg_margin_and_one_more_block_alone`.
     let start = start_height.unwrap_or(0) as i64;
     let heights_to_fetch: Vec<i64> = (start..fetch_height as i64)
         .filter(|h| !uptodate_heights.contains(h))
