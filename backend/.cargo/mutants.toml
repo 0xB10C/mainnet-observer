@@ -14,8 +14,17 @@ exclude_re = [
     "impl From<",         # From impls that only wrap an inner error
 ]
 
-# Never run tests/minimal.rs: it spawns a regtest bitcoind and takes minutes.
-additional_cargo_test_args = ["--lib", "--test", "rest_pooling"]
+# Run the unit tests and the fast integration tests. tests/minimal.rs is left
+# out: it spawns a regtest bitcoind and takes minutes. New tests/*.rs files
+# need to be added here to count for mutation testing.
+additional_cargo_test_args = [
+    "--lib",
+    "--test", "cli",
+    "--test", "db",
+    "--test", "pipeline",
+    "--test", "rest",
+    "--test", "rest_pooling",
+]
 
 # The unit tests are a few seconds; allow 3x the baseline, but never time out
 # below 60s so a loaded machine doesn't produce bogus timeouts.
