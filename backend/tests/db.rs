@@ -292,6 +292,82 @@ fn coinbase_subsidy_halves_at_the_halving_height() {
     assert_eq!(rows[2].fees_avg, 0.0);
 }
 
+#[test]
+fn per_date_queries_all_return_the_same_dates_in_the_same_order() {
+    // The frontend joins date.csv with every metric CSV file by row position,
+    // so all per date queries have to return their rows in the same order.
+    let mut conn = fresh_db();
+    let dates = [
+        "2024-03-07",
+        "2024-01-15",
+        "2024-12-31",
+        "2024-01-01",
+        "2024-06-30",
+        "2024-02-29",
+        "2024-11-05",
+    ];
+    let rows: Vec<Stats> = dates
+        .iter()
+        .enumerate()
+        .map(|(i, date)| stats_row(1000 + i as i64, date, (i % 3) as i32))
+        .collect();
+    insert_rows(&mut conn, &rows);
+
+    let mut sorted_dates: Vec<String> = dates.iter().map(|d| d.to_string()).collect();
+    sorted_dates.sort();
+
+    let date_column: Vec<String> = db::date_column(&mut conn)
+        .into_iter()
+        .map(|d| d.date)
+        .collect();
+    assert_eq!(date_column, sorted_dates);
+
+    // Every metric column has to group into the same number of rows.
+    for table in ALL_TABLES.iter() {
+        let columns: Vec<String> = db::list_column_names(&mut conn, table)
+            .unwrap()
+            .into_iter()
+            .map(|c| c.name)
+            .collect();
+        for column in columns.iter() {
+            if column == "date" || column == "hash" {
+                continue;
+            }
+            let rows = db::column_sum_and_avg_by_date(&mut conn, column, table);
+            assert_eq!(
+                rows.len(),
+                date_column.len(),
+                "{}.{} has {} rows but date.csv has {}",
+                table,
+                column,
+                rows.len(),
+                date_column.len()
+            );
+        }
+    }
+
+    // Each date has exactly one block here and the heights are unique, so the
+    // summed height of a group tells us which date the row belongs to.
+    for table in ["block_stats", "tx_stats", "input_stats"] {
+        let heights = db::column_sum_and_avg_by_date(&mut conn, "height", table);
+        let dates_of_rows: Vec<String> = heights
+            .iter()
+            .map(|r| dates[(r.sum - 1000) as usize].to_string())
+            .collect();
+        assert_eq!(
+            dates_of_rows, sorted_dates,
+            "{} is not grouped in date order",
+            table
+        );
+    }
+
+    let subsidy = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn);
+    assert_eq!(subsidy.len(), date_column.len());
+
+    let signaling = db::blocks_signaling_version_bit_per_day(&mut conn, 4).unwrap();
+    assert_eq!(signaling.len(), date_column.len());
+}
+
 // ---------------------------------------------------------------------------
 // mining pools
 // ---------------------------------------------------------------------------
