@@ -325,6 +325,48 @@ fn fails_when_the_stats_of_a_block_cannot_be_generated() {
     );
 }
 
+/// A broken block has to end the run quickly. Fetching the rest of the chain
+/// first would mean hours of work for a result that is thrown away.
+#[test]
+fn stops_fetching_once_the_stats_of_a_block_failed() {
+    common::init_logger();
+    const FIRST_HEIGHT: u64 = 361500;
+    // The fetcher can be about a dozen blocks ahead before the failure
+    // reaches it: the block channel buffers ten, plus the ones in flight.
+    // Far more blocks than that, so the bound below is nowhere near that
+    // floor on a slow machine.
+    const BLOCKS: u64 = 200;
+
+    let mock = MockCore::builder()
+        .blocks(tip_for_last_fetched_height(FIRST_HEIGHT + BLOCKS - 1))
+        .blocks_at(FIRST_HEIGHT..FIRST_HEIGHT + BLOCKS, "361582")
+        // The first block of the run is the broken one.
+        .raw_block_at(FIRST_HEIGHT, block_with_undecodable_transaction("361582"))
+        .start();
+    let conn = common::memory_db();
+
+    let result = collect_statistics(
+        mock.host(),
+        mock.port(),
+        Arc::clone(&conn),
+        1,
+        Some(FIRST_HEIGHT),
+    );
+
+    assert!(
+        matches!(result, Err(MainError::Stats(_))),
+        "expected a stats error, got {:?}",
+        result
+    );
+    let fetched = mock.requested_heights().len() as u64;
+    assert!(
+        fetched < BLOCKS / 2,
+        "{} of {} blocks were fetched after the first one already failed",
+        fetched,
+        BLOCKS
+    );
+}
+
 /// Takes a block fixture and replaces the raw hex of its first transaction
 /// with something that isn't a transaction.
 fn block_with_undecodable_transaction(fixture: &str) -> String {

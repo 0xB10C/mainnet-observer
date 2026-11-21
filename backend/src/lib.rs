@@ -282,9 +282,18 @@ pub fn collect_statistics(
     // calculates the per block stats and sends them onwards to the batch-insert
     // task
     let calc_stats_task = thread::spawn(move || -> Result<(), MainError> {
+        // Set once the batch-insert task is gone, which means the run already
+        // failed. Dropping the block receiver then also stops the get-blocks
+        // task, instead of letting it fetch the rest of the chain for nothing.
+        let insert_task_gone = Arc::new(AtomicBool::new(false));
         while let Ok((height, block)) = block_receiver.recv() {
+            if insert_task_gone.load(Ordering::Relaxed) {
+                warn!("calc-stats: the batch-insert task is gone, stopping");
+                break;
+            }
             debug!("calc-stats: processing block at height {}..", height);
             let stat_sender_clone = stat_sender.clone();
+            let insert_task_gone = Arc::clone(&insert_task_gone);
             rayon::spawn(move || {
                 let stats_result = Stats::from_block(block);
                 if let Err(e) = &stats_result {
@@ -302,6 +311,7 @@ pub fn collect_statistics(
                     // The batch-insert task is gone, so there is nobody left to
                     // hand these stats to. It (or another block) already failed
                     // the run.
+                    insert_task_gone.store(true, Ordering::Relaxed);
                     warn!(
                         "during sending stats at height {} to db writer: stats receiver dropped",
                         height
