@@ -148,15 +148,20 @@ pub fn top5_miningpools_csv(
 
     let top_pools = db::current_top_mining_pools(&mut conn)?;
     let mut pool_ids: [Vec<i32>; 5] = [vec![-1], vec![-1], vec![-1], vec![-1], vec![-1]];
-    let mut pool_names: [&str; 5] = ["", "", "", "", ""];
+    let mut pool_names: [String; 5] = Default::default();
     for (i, top_pool) in top_pools.iter().enumerate() {
         if i >= pool_ids.len() {
             break;
         }
         pool_ids[i] = vec![top_pool.pool_id];
+        // Pools we can't identify are named Unknown like in the other CSV
+        // files, plus their id so that two of them don't share a column name.
+        // The columns of the remaining array entries keep their empty name,
+        // as they have no pool at all.
+        pool_names[i] = format!("Unknown ({})", top_pool.pool_id);
         for pool in pool_data.iter().rev() {
             if top_pool.pool_id == pool.id as i32 {
-                pool_names[i] = &pool.name;
+                pool_names[i] = pool.name.clone();
                 break;
             }
         }
@@ -218,7 +223,8 @@ pub fn antpool_and_friends_csv(
         vec![-1],
         vec![-1],
     ];
-    let mut pool_names: [&str; 5] = ["AntPool & friends", "", "", "", ""];
+    let mut pool_names: [String; 5] = Default::default();
+    pool_names[0] = "AntPool & friends".to_string();
     let mut pools_added = 1;
 
     for top_pool in top_pools.iter() {
@@ -231,9 +237,13 @@ pub fn antpool_and_friends_csv(
             continue;
         } else {
             pool_ids[pools_added] = vec![top_pool.pool_id];
+            // Pools we can't identify are named Unknown like in the other CSV
+            // files, plus their id so that two of them don't share a column
+            // name.
+            pool_names[pools_added] = format!("Unknown ({})", top_pool.pool_id);
             for pool in pool_data.iter().rev() {
                 if top_pool.pool_id == pool.id as i32 {
-                    pool_names[pools_added] = &pool.name;
+                    pool_names[pools_added] = pool.name.clone();
                     break;
                 }
             }
@@ -909,6 +919,45 @@ mod tests {
         );
         assert_eq!(header[2], pool_name(88));
         assert_eq!(*header.last().unwrap(), "total");
+    }
+
+    #[test]
+    fn top_pool_csv_headers_name_an_unknown_pool_unknown_with_its_id() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        // Pool 9999 is not in the pool list. Every other csv file calls such
+        // a pool "Unknown" instead of leaving the name empty, and an empty
+        // name showed up as an unnamed series in the chart.
+        let rows = rows_of(&dir.read("top5pools.csv"));
+        let header: Vec<&str> = rows[0].split(',').collect();
+        assert_eq!(header[3], "Unknown (9999)");
+
+        let rows = rows_of(&dir.read("miningpools-antpool-and-friends.csv"));
+        let header: Vec<&str> = rows[0].split(',').collect();
+        assert_eq!(header[3], "Unknown (9999)");
+    }
+
+    #[test]
+    fn two_unidentified_top_pools_get_different_headers() {
+        let mut conn = db::open_db_and_run_migrations(":memory:").unwrap();
+        insert_rows(
+            &mut conn,
+            &[
+                stats_row(800_000, "2024-01-01", 9999),
+                stats_row(800_001, "2024-01-01", 9999),
+                stats_row(800_002, "2024-01-02", 9998),
+            ],
+        );
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), Arc::new(Mutex::new(conn))).unwrap();
+
+        // The frontend keys the columns by their header, so two unidentified
+        // pools with the same header would collapse into one series.
+        let rows = rows_of(&dir.read("top5pools.csv"));
+        let header: Vec<&str> = rows[0].split(',').collect();
+        assert_eq!(header[1], "Unknown (9999)");
+        assert_eq!(header[2], "Unknown (9998)");
     }
 
     #[test]
