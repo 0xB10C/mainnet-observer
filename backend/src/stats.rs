@@ -2592,4 +2592,58 @@ mod tests {
         assert_eq!(stats.tx_1_input_1_output, 2);
         assert_eq!(stats.tx_1_input_2_output, 1);
     }
+
+    // ---------------------------------------------------------------------
+    // TxStats: timelocks
+    // ---------------------------------------------------------------------
+
+    const NON_FINAL: Sequence = Sequence::ENABLE_LOCKTIME_NO_RBF;
+
+    /// A block at height 100_000 with a single transaction that has the given
+    /// locktime and sequence.
+    fn block_with_locktime(lock_time: u32, sequence: Sequence) -> Block {
+        synthetic_block(
+            100_000,
+            vec![simple_coinbase(1), simple_spend(2, lock_time, sequence, 1)],
+        )
+    }
+
+    #[test]
+    fn a_locktime_below_the_timestamp_threshold_is_a_height_locktime() {
+        let stats = tx_stats(&block_with_locktime(99_999, NON_FINAL));
+        assert_eq!(stats.tx_timelock_height, 1);
+        assert_eq!(stats.tx_timelock_timestamp, 0);
+    }
+
+    #[test]
+    fn a_locktime_above_the_timestamp_threshold_is_a_timestamp_locktime() {
+        let stats = tx_stats(&block_with_locktime(1_434_694_400, NON_FINAL));
+        assert_eq!(stats.tx_timelock_timestamp, 1);
+        assert_eq!(stats.tx_timelock_height, 0);
+        // a timestamp is never compared against the block height
+        assert_eq!(stats.tx_timelock_too_high, 0);
+    }
+
+    #[test]
+    fn a_locktime_of_zero_is_not_counted() {
+        let stats = tx_stats(&block_with_locktime(0, NON_FINAL));
+        assert_eq!(stats.tx_timelock_height, 0);
+        assert_eq!(stats.tx_timelock_timestamp, 0);
+        assert_eq!(stats.tx_timelock_not_enforced, 0);
+        assert_eq!(stats.tx_timelock_too_high, 0);
+    }
+
+    #[test]
+    fn a_locktime_is_not_enforced_when_all_sequences_are_final() {
+        let stats = tx_stats(&block_with_locktime(99_999, Sequence::MAX));
+        assert_eq!(stats.tx_timelock_not_enforced, 1);
+        // it is still counted as a height locktime
+        assert_eq!(stats.tx_timelock_height, 1);
+    }
+
+    #[test]
+    fn a_locktime_is_enforced_when_a_sequence_is_not_final() {
+        let stats = tx_stats(&block_with_locktime(99_999, NON_FINAL));
+        assert_eq!(stats.tx_timelock_not_enforced, 0);
+    }
 }
