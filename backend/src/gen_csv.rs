@@ -614,3 +614,315 @@ pub fn mining_pool_blocks_per_day_csv(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rest::Block;
+    use crate::stats::Stats;
+    use crate::write_csv_files;
+    use diesel::sql_query;
+    use diesel::RunQueryDsl;
+    use rand::distr::{Alphanumeric, SampleString};
+    use serde::Deserialize;
+    use std::fs::File;
+    use std::io::BufReader;
+    use std::path::{Path, PathBuf};
+
+    /// The height of the block in `testdata/361582.json`.
+    const FIXTURE_HEIGHT: i64 = 361_582;
+
+    /// A temporary directory that removes itself again.
+    struct TempDir(PathBuf);
+
+    impl TempDir {
+        fn new() -> TempDir {
+            let mut path = std::env::temp_dir();
+            path.push(format!(
+                "mainnet-observer-gen-csv-tests-{}",
+                Alphanumeric.sample_string(&mut rand::rng(), 16)
+            ));
+            std::fs::create_dir_all(&path).unwrap();
+            TempDir(path)
+        }
+
+        fn path(&self) -> &str {
+            self.0.to_str().unwrap()
+        }
+
+        fn read(&self, name: &str) -> String {
+            std::fs::read_to_string(self.0.join(name))
+                .unwrap_or_else(|e| panic!("could not read {}: {}", name, e))
+        }
+
+        fn exists(&self, name: &str) -> bool {
+            Path::new(&self.0).join(name).exists()
+        }
+    }
+
+    impl Drop for TempDir {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn fixture_stats() -> &'static Stats {
+        static FIXTURE: std::sync::OnceLock<Stats> = std::sync::OnceLock::new();
+        FIXTURE.get_or_init(|| {
+            let buffer = BufReader::new(File::open("./testdata/361582.json").unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            Stats::from_block(block).expect("test block should produce stats")
+        })
+    }
+
+    fn stats_row(height: i64, date: &str, pool_id: i32) -> Stats {
+        let mut stats = fixture_stats().clone();
+        stats.block.height = height;
+        stats.block.date = date.to_string();
+        stats.block.pool_id = pool_id;
+        stats.tx.height = height;
+        stats.tx.date = date.to_string();
+        stats
+    }
+
+    /// Inserts rows and makes sure all six tables use the same height and
+    /// date. Only `block_stats` and `tx_stats` have public height and date
+    /// fields, the other four keep the test block's height.
+    fn insert_rows(conn: &mut SqliteConnection, rows: &[Stats]) {
+        for row in rows {
+            let height = row.block.height;
+            assert_ne!(height, FIXTURE_HEIGHT);
+            let date = row.block.date.clone();
+            db::insert_stats(conn, std::slice::from_ref(row)).unwrap();
+            for table in [
+                "input_stats",
+                "output_stats",
+                "script_stats",
+                "feerate_stats",
+            ] {
+                sql_query(format!(
+                    "UPDATE OR REPLACE {} SET height = {}, date = '{}' WHERE height = {}",
+                    table, height, date, FIXTURE_HEIGHT
+                ))
+                .execute(conn)
+                .unwrap();
+            }
+        }
+    }
+
+    /// A database with six blocks on three days, mined by three pools.
+    /// Pool 88 is Foundry USA, pool 61 is AntPool (part of the AntPool proxy
+    /// pool group) and pool 9999 does not exist in the pool list. The three
+    /// pools have different block counts so that their ranking is unambiguous.
+    fn filled_db() -> Arc<Mutex<SqliteConnection>> {
+        let mut conn = db::open_db_and_run_migrations(":memory:").unwrap();
+        let mut rows = vec![
+            stats_row(800_000, "2024-01-01", 88),
+            stats_row(800_001, "2024-01-01", 88),
+            stats_row(800_002, "2024-01-01", 88),
+            stats_row(800_003, "2024-01-02", 61),
+            stats_row(800_004, "2024-01-02", 61),
+            stats_row(800_005, "2024-01-03", 9999),
+        ];
+        for (row, transactions) in rows.iter_mut().zip([10, 20, 30, 7, 3, 3]) {
+            row.block.transactions = transactions;
+            row.block.version = 0x2000_0000;
+            row.tx.tx_spending_ephemeral_dust = 0;
+        }
+        // Only the two first blocks signal version bit 4.
+        rows[0].block.version = 0x2000_0010;
+        rows[1].block.version = 0x2000_0010;
+        rows[5].tx.tx_spending_ephemeral_dust = 1;
+        insert_rows(&mut conn, &rows);
+        Arc::new(Mutex::new(conn))
+    }
+
+    fn pool_name(id: u64) -> String {
+        bitcoin_pool_identification::default_data(Network::Bitcoin)
+            .iter()
+            .find(|p| p.id == id)
+            .unwrap_or_else(|| panic!("pool {} should be in the pool list", id))
+            .name
+            .clone()
+    }
+
+    fn rows_of(csv: &str) -> Vec<String> {
+        csv.trim_end_matches('\n')
+            .split('\n')
+            .map(|l| l.to_string())
+            .collect()
+    }
+
+    #[test]
+    fn write_csv_files_creates_all_expected_files() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        for name in [
+            "date.csv",
+            "transactions_avg.csv",
+            "transactions_sum.csv",
+            "block_count_sum.csv",
+            "coinbase_subsidy_avg.csv",
+            "coinbase_fees_avg.csv",
+            "top5pools.csv",
+            "miningpools-antpool-and-friends.csv",
+            "miningpools-centralization-index.csv",
+            "miningpools-centralization-index-with-proxy-pools.csv",
+            "miningpools-mining-ephemeral-dust.csv",
+            "miningpools-mining-bip54-coinbase.csv",
+            "miningpools-mining-p2a.csv",
+            "miningpools-mining-bip110.csv",
+            "bip110-signaling.csv",
+            "unclaimed-coinbase-blocks.csv",
+            "miningpools-poolid-0.csv",
+            "miningpools-poolid-61.csv",
+            "miningpools-poolid-88.csv",
+        ] {
+            assert!(dir.exists(name), "{} should have been written", name);
+        }
+    }
+
+    #[test]
+    fn every_metric_file_has_as_many_rows_as_date_csv() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        let dates = rows_of(&dir.read("date.csv"));
+        assert_eq!(
+            dates,
+            vec!["date", "2024-01-01", "2024-01-02", "2024-01-03"]
+        );
+
+        // The frontend joins these files with date.csv by row position.
+        let mut checked = 0;
+        for entry in std::fs::read_dir(&dir.0).unwrap() {
+            let name = entry.unwrap().file_name().to_string_lossy().to_string();
+            if !name.ends_with("_avg.csv") && !name.ends_with("_sum.csv") {
+                continue;
+            }
+            assert_eq!(
+                rows_of(&dir.read(&name)).len(),
+                dates.len(),
+                "{} does not line up with date.csv",
+                name
+            );
+            checked += 1;
+        }
+        assert!(checked > 50, "only checked {} metric files", checked);
+    }
+
+    #[test]
+    fn metric_files_have_a_header_and_four_decimal_averages() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        assert_eq!(
+            dir.read("transactions_avg.csv"),
+            "transactions_avg\n20.0000\n5.0000\n3.0000\n"
+        );
+        assert_eq!(
+            dir.read("transactions_sum.csv"),
+            "transactions_sum\n60\n10\n3\n"
+        );
+        // block_count is 1 for every block, so its sum is the blocks per day.
+        assert_eq!(
+            dir.read("block_count_sum.csv"),
+            "block_count_sum\n3\n2\n1\n"
+        );
+    }
+
+    #[test]
+    fn coinbase_subsidy_and_fees_use_four_decimals() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        let subsidy = rows_of(&dir.read("coinbase_subsidy_avg.csv"));
+        assert_eq!(subsidy[0], "coinbase_subsidy_avg");
+        // Height 800000 is in the fourth subsidy era: 6.25 BTC.
+        assert_eq!(subsidy[1], "625000000.0000");
+        assert_eq!(subsidy.len(), 4, "one header plus one row per date");
+        assert_eq!(
+            rows_of(&dir.read("coinbase_fees_avg.csv"))[0],
+            "coinbase_fees_avg"
+        );
+    }
+
+    #[test]
+    fn top5_pools_csv_names_the_pools_it_found() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        let rows = rows_of(&dir.read("top5pools.csv"));
+        let header: Vec<&str> = rows[0].split(',').collect();
+        assert_eq!(header[0], "date");
+        assert_eq!(header[1], pool_name(88));
+        assert_eq!(header[2], pool_name(61));
+        // Only three pools mined. The two remaining columns are placeholders
+        // without a name. This cannot happen with real data, where there are
+        // always more than five pools.
+        assert_eq!(header[4], "");
+        assert_eq!(header[5], "");
+        assert_eq!(header[6], "total");
+
+        assert_eq!(rows[1], "2024-01-01,3,0,0,0,0,3");
+        assert_eq!(rows[2], "2024-01-02,0,2,0,0,0,2");
+    }
+
+    #[test]
+    fn antpool_and_friends_csv_lists_a_group_pool_only_once() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        let rows = rows_of(&dir.read("miningpools-antpool-and-friends.csv"));
+        let header: Vec<&str> = rows[0].split(',').collect();
+        assert_eq!(header[0], "date");
+        assert_eq!(header[1], "AntPool & friends");
+        // AntPool (61) is part of the group, so it must not get its own column.
+        assert!(
+            !header[2..].contains(&pool_name(61).as_str()),
+            "a pool of the AntPool group is listed twice: {:?}",
+            header
+        );
+        assert_eq!(header[2], pool_name(88));
+        assert_eq!(*header.last().unwrap(), "total");
+    }
+
+    #[test]
+    fn unknown_pool_ids_are_written_as_unknown() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        // Pool 9999 mined the only block with an ephemeral dust spend.
+        let rows = rows_of(&dir.read("miningpools-mining-ephemeral-dust.csv"));
+        assert_eq!(rows[0], "pool,height,date,total");
+        assert_eq!(rows[1], "Unknown,800005,2024-01-03,1");
+    }
+
+    #[test]
+    fn version_bit_files_hold_the_signaling_blocks() {
+        let dir = TempDir::new();
+        let conn = filled_db();
+        write_csv_files(dir.path(), Arc::clone(&conn)).unwrap();
+
+        // bip110-signaling.csv is joined with date.csv by row position.
+        assert_eq!(
+            dir.read("bip110-signaling.csv"),
+            "bip110_signaling_count\n2\n0\n0\n"
+        );
+
+        // The default BIP110 height range does not contain our blocks.
+        assert_eq!(
+            dir.read("miningpools-mining-bip110.csv"),
+            "pool,height,date,total\n"
+        );
+
+        // With a range that contains them, the signaling pool shows up.
+        pools_mining_version_bit_csv(dir.path(), conn, "bit4", 4, 0, 900_000).unwrap();
+        let rows = rows_of(&dir.read("bit4.csv"));
+        assert_eq!(rows[0], "pool,height,date,total");
+        assert_eq!(rows[1], format!("{},800000,2024-01-01,2", pool_name(88)));
+        assert_eq!(rows.len(), 2, "only one pool signaled bit 4");
+    }
+}
