@@ -32,7 +32,7 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 6: add inscription stats
 // version 7: add block hash
 // version 8: add sigops
-// version 9: count a locktime equal to the block height as too high
+// version 9: fix the too-high locktime and the anchor spend input counters
 pub const STATS_VERSION: i32 = 9;
 
 #[derive(Debug)]
@@ -782,7 +782,7 @@ impl InputStats {
                     InputType::Unknown | InputType::P2a => s.inputs_unknown += 1,
                 }
             }
-            for input in tx.input.iter() {
+            for (input, input_info) in tx.input.iter().zip(tx_info.input_infos.iter()) {
                 let (Some(txid), Some(prevout)) = (&input.txid, &input.prevout) else {
                     // coinbase input
                     continue;
@@ -798,7 +798,15 @@ impl InputStats {
 
                 if matches!(prevout.script_pub_key.type_, ScriptPubkeyType::Anchor) {
                     s.inputs_p2a += 1;
-                    s.inputs_unknown -= 1;
+                    // An anchor spend is empty and can't be told apart from an
+                    // unknown input by looking at the input alone, so it was
+                    // counted as unknown above. Take it back out of there - but
+                    // only if it really ended up there: a spend carrying a
+                    // witness (non-standard, but valid) is recognized by its
+                    // witness and counted elsewhere.
+                    if matches!(input_info.in_type, InputType::Unknown | InputType::P2a) {
+                        s.inputs_unknown -= 1;
+                    }
 
                     if prevout.value < bitcoin::Amount::from_sat(P2A_DUST_THRESHOLD) {
                         s.inputs_p2a_dust += 1;
@@ -3036,5 +3044,39 @@ mod tests {
         assert_eq!(stats.outputs_p2a, 3);
         assert_eq!(stats.outputs_p2a_dust, 1);
         assert_eq!(stats.outputs_p2a_amount, 720);
+    }
+
+    #[test]
+    fn the_unknown_input_count_stays_at_zero_for_an_anchor_spend_with_a_witness() {
+        // Anchor outputs are spendable by anyone and only relayed with an empty
+        // witness, but a miner can mine a spend that carries one. Such an input
+        // is recognized by its witness and never lands in the unknown bucket,
+        // so nothing must be taken out of it either.
+        let mut tx = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(1))],
+        );
+        tx.input[0].witness = Witness::from_slice(&[[0u8; 64]]);
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(
+                    &tx,
+                    Some(Amount::from_sat(100)),
+                    vec![Some(prevout(
+                        TEST_HEIGHT - 1,
+                        240,
+                        ScriptPubkeyType::Anchor,
+                    ))],
+                ),
+            ],
+        );
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_p2a, 1);
+        assert_eq!(stats.inputs_p2tr_keypath, 1);
+        assert_eq!(stats.inputs_unknown, 0);
     }
 }
