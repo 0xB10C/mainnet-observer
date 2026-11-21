@@ -3079,4 +3079,130 @@ mod tests {
         assert_eq!(stats.inputs_p2tr_keypath, 1);
         assert_eq!(stats.inputs_unknown, 0);
     }
+
+    // ---------------------------------------------------------------------
+    // OutputStats: OP_RETURN data and coinbase outputs
+    // ---------------------------------------------------------------------
+
+    use super::calculate_opreturn_data_size;
+
+    #[test]
+    fn a_script_that_is_not_an_op_return_has_no_op_return_data() {
+        assert_eq!(calculate_opreturn_data_size(&p2wpkh_script(1)), 0);
+    }
+
+    #[test]
+    fn a_bare_op_return_has_no_data() {
+        assert_eq!(
+            calculate_opreturn_data_size(&ScriptBuf::from_bytes(vec![0x6a])),
+            0
+        );
+    }
+
+    #[test]
+    fn op_return_data_is_the_length_of_a_single_push() {
+        // OP_RETURN OP_PUSHBYTES_3 010203
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03]);
+        assert_eq!(calculate_opreturn_data_size(&script), 3);
+    }
+
+    #[test]
+    fn op_return_data_adds_up_several_pushes() {
+        // OP_RETURN OP_PUSHBYTES_3 010203 OP_PUSHBYTES_2 0405
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03, 0x02, 0x04, 0x05]);
+        assert_eq!(calculate_opreturn_data_size(&script), 5);
+    }
+
+    #[test]
+    fn op_return_data_does_not_count_opcodes() {
+        // OP_RETURN OP_PUSHNUM_1 OP_ADD
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x51, 0x93]);
+        assert_eq!(calculate_opreturn_data_size(&script), 0);
+    }
+
+    #[test]
+    fn op_return_data_stops_at_a_truncated_push() {
+        // OP_RETURN OP_PUSHBYTES_3 010203 OP_PUSHBYTES_4 0405, with the last
+        // push claiming four bytes while only two follow
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05]);
+        assert_eq!(calculate_opreturn_data_size(&script), 3);
+    }
+
+    #[test]
+    fn op_return_data_does_not_count_the_pushdata_length_byte() {
+        // OP_RETURN OP_PUSHDATA1 0x50 <80 bytes>: the usual 80 byte payload
+        // needs OP_PUSHDATA1, which takes the length as an extra byte
+        let mut v = vec![0x6a, 0x4c, 0x50];
+        v.extend([0x42; 80]);
+        assert_eq!(calculate_opreturn_data_size(&ScriptBuf::from_bytes(v)), 80);
+    }
+
+    /// The OP_RETURN script a coinbase commits the witness root hash in:
+    /// `OP_RETURN OP_PUSHBYTES_36 aa21a9ed <32 byte commitment>`.
+    fn witness_commitment_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed];
+        v.extend([0x11; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    #[test]
+    fn the_outputs_of_the_coinbase_are_counted_separately() {
+        let coinbase = coinbase_tx(
+            &[
+                (5_000_000_000, p2wpkh_script(1)),
+                (0, witness_commitment_script()),
+            ],
+            0,
+            Sequence::MAX,
+        );
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(2))],
+        );
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                rest_tx(&coinbase, None, vec![None]),
+                rest_tx(&spend, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        );
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_coinbase, 2);
+        assert_eq!(stats.outputs_coinbase_p2wpkh, 1);
+        assert_eq!(stats.outputs_coinbase_opreturn, 1);
+        // the transaction after the coinbase is not counted as coinbase
+        assert_eq!(stats.outputs_p2wpkh, 2);
+    }
+
+    #[test]
+    fn a_witness_commitment_is_counted_in_the_coinbase() {
+        let coinbase = coinbase_tx(&[(0, witness_commitment_script())], 0, Sequence::MAX);
+        let block = synthetic_block(TEST_HEIGHT, vec![rest_tx(&coinbase, None, vec![None])]);
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_opreturn, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_witness_commitment, 1);
+        assert_eq!(stats.outputs_opreturn_bytes, 36);
+    }
+
+    #[test]
+    fn a_witness_commitment_outside_the_coinbase_is_not_counted_as_one() {
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(0, witness_commitment_script())],
+        );
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&spend, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        );
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_opreturn, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_witness_commitment, 0);
+    }
 }
