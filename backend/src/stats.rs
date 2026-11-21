@@ -2141,4 +2141,360 @@ mod tests {
         diff_stats(&stats, &expected_stats);
         assert_eq!(stats, expected_stats, "see diff above");
     }
+
+    // ---------------------------------------------------------------------
+    // Helpers for building blocks from scratch.
+    //
+    // The stats mix fields that Bitcoin Core reports in the block JSON (`fee`,
+    // `vsize`, the prevouts, ...) with fields read from the raw transaction, so
+    // a test block is always built from a real `bitcoin::Transaction` that is
+    // then wrapped into the `rest::Transaction` Core would hand us for it.
+    // ---------------------------------------------------------------------
+
+    use bitcoin::hashes::Hash;
+    use bitcoin::{
+        absolute::LockTime, block, transaction, Amount, BlockHash, OutPoint, ScriptBuf, Sequence,
+        Txid, Weight, Witness,
+    };
+    use bitcoin_pool_identification::Pool;
+    use rawtx_rs::tx::TxInfo;
+
+    use crate::rest::{
+        Input, Output, Prevout, PrevoutScriptPubKey, ScriptPubKey, ScriptPubkeyType,
+        Transaction as RestTx,
+    };
+
+    type BtcTx = bitcoin::Transaction;
+
+    /// The decoded transactions and their `TxInfo`s, the way `Stats::from_block`
+    /// prepares them for the individual `from_block` functions.
+    fn decode(block: &Block) -> (Vec<TxInfo>, Vec<BtcTx>) {
+        let txns: Vec<BtcTx> = block
+            .txdata
+            .iter()
+            .map(|tx| bitcoin::consensus::deserialize(&tx.raw).expect("raw tx to decode"))
+            .collect();
+        let tx_infos = txns.iter().map(|tx| TxInfo::new(tx).unwrap()).collect();
+        (tx_infos, txns)
+    }
+
+    fn block_stats(block: &Block) -> BlockStats {
+        block_stats_with(block, 0, &[])
+    }
+
+    fn block_stats_with(block: &Block, sigops: usize, pools: &[Pool]) -> BlockStats {
+        let (tx_infos, _) = decode(block);
+        BlockStats::from_block(block, "date".to_string(), &tx_infos, sigops, pools)
+            .expect("block stats to be computed")
+    }
+
+    /// A P2WPKH output script. Its dust threshold is 294 sat.
+    fn p2wpkh_script(byte: u8) -> ScriptBuf {
+        let mut v = vec![0x00, 0x14];
+        v.extend([byte; 20]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A coinbase transaction paying to `outputs`.
+    fn coinbase_tx(outputs: &[(u64, ScriptBuf)], lock_time: u32, sequence: Sequence) -> BtcTx {
+        BtcTx {
+            version: transaction::Version::ONE,
+            lock_time: LockTime::from_consensus(lock_time),
+            input: vec![bitcoin::TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::from_bytes(vec![0x51, 0x51]),
+                sequence,
+                witness: Witness::new(),
+            }],
+            output: outputs
+                .iter()
+                .map(|(value, script)| bitcoin::TxOut {
+                    value: Amount::from_sat(*value),
+                    script_pubkey: script.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// A coinbase transaction claiming `value_sat` in a single output.
+    fn simple_coinbase(value_sat: u64) -> RestTx {
+        rest_tx(
+            &coinbase_tx(&[(value_sat, p2wpkh_script(0x00))], 0, Sequence::MAX),
+            None,
+            vec![None],
+        )
+    }
+
+    /// A transaction spending `inputs` and creating `outputs`. The inputs have
+    /// an empty script_sig and no witness.
+    fn spending_tx(
+        version: i32,
+        lock_time: u32,
+        inputs: &[(OutPoint, Sequence)],
+        outputs: &[(u64, ScriptBuf)],
+    ) -> BtcTx {
+        BtcTx {
+            version: transaction::Version(version),
+            lock_time: LockTime::from_consensus(lock_time),
+            input: inputs
+                .iter()
+                .map(|(outpoint, sequence)| bitcoin::TxIn {
+                    previous_output: *outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: *sequence,
+                    witness: Witness::new(),
+                })
+                .collect(),
+            output: outputs
+                .iter()
+                .map(|(value, script)| bitcoin::TxOut {
+                    value: Amount::from_sat(*value),
+                    script_pubkey: script.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn prevout(height: i64, value_sat: u64, type_: ScriptPubkeyType) -> Prevout {
+        Prevout {
+            height,
+            value: Amount::from_sat(value_sat),
+            script_pub_key: PrevoutScriptPubKey { type_ },
+        }
+    }
+
+    /// Wraps a `bitcoin::Transaction` into the `rest::Transaction` that Bitcoin
+    /// Core would hand us for it. `prevouts` holds one entry per input; a
+    /// coinbase input gets `None`.
+    fn rest_tx(tx: &BtcTx, fee: Option<Amount>, prevouts: Vec<Option<Prevout>>) -> RestTx {
+        assert_eq!(prevouts.len(), tx.input.len());
+        RestTx {
+            raw: bitcoin::consensus::serialize(tx),
+            txid: tx.compute_txid(),
+            size: tx.total_size() as u32,
+            vsize: tx.vsize() as u32,
+            version: tx.version.0 as u32,
+            fee,
+            lock_time: tx.lock_time,
+            input: tx
+                .input
+                .iter()
+                .zip(prevouts)
+                .map(|(input, prevout)| {
+                    let is_coinbase = input.previous_output.is_null();
+                    Input {
+                        sequence: input.sequence,
+                        coinbase: is_coinbase.then(|| input.script_sig.to_bytes()),
+                        txid: (!is_coinbase).then_some(input.previous_output.txid),
+                        vout: (!is_coinbase).then_some(input.previous_output.vout),
+                        prevout,
+                    }
+                })
+                .collect(),
+            output: tx
+                .output
+                .iter()
+                .enumerate()
+                .map(|(n, output)| Output {
+                    value: output.value,
+                    n: n as u32,
+                    script_pub_key: ScriptPubKey {
+                        script: output.script_pubkey.clone(),
+                        type_: ScriptPubkeyType::Nonstandard,
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    /// A block with a made up header (the one of block 361582) and the given
+    /// transactions.
+    ///
+    /// Its `size`, `stripped_size` and `weight` are rough sums over the
+    /// transactions, not what Bitcoin Core would report, so don't assert on
+    /// them.
+    fn synthetic_block(height: i64, txdata: Vec<RestTx>) -> Block {
+        Block {
+            hash: BlockHash::all_zeros(),
+            size: txdata.iter().map(|tx| tx.size as i64).sum(),
+            stripped_size: txdata.iter().map(|tx| tx.size as i64).sum(),
+            weight: Weight::from_vb(txdata.iter().map(|tx| tx.vsize as u64).sum()).unwrap(),
+            height,
+            version: block::Version::from_consensus(2),
+            txdata,
+            time: 1434694400,
+            nonce: 0,
+            bits: "18162043".to_string(),
+        }
+    }
+
+    /// A txid that is not used by anything else in a test block.
+    fn fake_txid(byte: u8) -> Txid {
+        Txid::from_byte_array([byte; 32])
+    }
+
+    // ---------------------------------------------------------------------
+    // BlockStats
+    // ---------------------------------------------------------------------
+
+    /// A block at `height` whose coinbase claims `claimed_sat` and that
+    /// contains one transaction paying `fee_sat`.
+    fn block_claiming(height: i64, claimed_sat: u64, fee_sat: u64) -> Block {
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(2))],
+        );
+        synthetic_block(
+            height,
+            vec![
+                simple_coinbase(claimed_sat),
+                rest_tx(
+                    &spend,
+                    Some(Amount::from_sat(fee_sat)),
+                    vec![Some(prevout(
+                        height - 1,
+                        1_000 + fee_sat,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn coinbase_unclaimed_sat_is_zero_when_the_whole_reward_is_claimed() {
+        let block = block_claiming(100_000, 5_000_000_000 + 1_234, 1_234);
+        assert_eq!(block_stats(&block).coinbase_unclaimed_sat, 0);
+    }
+
+    #[test]
+    fn coinbase_unclaimed_sat_is_the_part_of_the_reward_the_miner_left_behind() {
+        let block = block_claiming(100_000, 5_000_000_000, 1_234);
+        assert_eq!(block_stats(&block).coinbase_unclaimed_sat, 1_234);
+    }
+
+    #[test]
+    fn coinbase_unclaimed_sat_is_zero_when_the_miner_claims_too_much() {
+        // Such a block would be invalid, but the stats must not underflow.
+        let block = block_claiming(100_000, 6_000_000_000, 1_234);
+        assert_eq!(block_stats(&block).coinbase_unclaimed_sat, 0);
+    }
+
+    #[test]
+    fn coinbase_subsidy_halves_every_210000_blocks() {
+        // With a coinbase claiming nothing, the unclaimed amount is the subsidy.
+        for (height, subsidy) in [
+            (0, 5_000_000_000),
+            (209_999, 5_000_000_000),
+            (210_000, 2_500_000_000),
+            (419_999, 2_500_000_000),
+            (420_000, 1_250_000_000),
+            (630_000, 625_000_000),
+            (840_000, 312_500_000),
+        ] {
+            let block = synthetic_block(height, vec![simple_coinbase(0)]);
+            assert_eq!(
+                block_stats(&block).coinbase_unclaimed_sat,
+                subsidy,
+                "wrong subsidy at height {}",
+                height
+            );
+        }
+    }
+
+    #[test]
+    fn coinbase_locktime_set_is_false_without_a_locktime() {
+        let coinbase = coinbase_tx(&[(1, p2wpkh_script(0))], 0, Sequence::MAX);
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(!block_stats(&block).coinbase_locktime_set);
+    }
+
+    #[test]
+    fn coinbase_locktime_set_is_true_with_a_locktime() {
+        let coinbase = coinbase_tx(&[(1, p2wpkh_script(0))], 799_999, Sequence::MAX);
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(block_stats(&block).coinbase_locktime_set);
+    }
+
+    #[test]
+    fn coinbase_locktime_is_bip54_with_the_previous_height_and_a_non_final_sequence() {
+        let coinbase = coinbase_tx(
+            &[(1, p2wpkh_script(0))],
+            799_999,
+            Sequence::from_consensus(0),
+        );
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(block_stats(&block).coinbase_locktime_set_bip54);
+    }
+
+    #[test]
+    fn coinbase_locktime_is_not_bip54_with_a_final_sequence() {
+        let coinbase = coinbase_tx(&[(1, p2wpkh_script(0))], 799_999, Sequence::MAX);
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(!block_stats(&block).coinbase_locktime_set_bip54);
+    }
+
+    #[test]
+    fn coinbase_locktime_is_not_bip54_with_the_wrong_height() {
+        for lock_time in [799_998, 800_000] {
+            let coinbase = coinbase_tx(
+                &[(1, p2wpkh_script(0))],
+                lock_time,
+                Sequence::from_consensus(0),
+            );
+            let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+            assert!(
+                !block_stats(&block).coinbase_locktime_set_bip54,
+                "locktime {} should not count as a BIP54 locktime",
+                lock_time
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_with_only_a_coinbase_is_empty() {
+        let block = synthetic_block(100_000, vec![simple_coinbase(1)]);
+        assert!(block_stats(&block).empty);
+    }
+
+    #[test]
+    fn a_block_with_a_second_transaction_is_not_empty() {
+        let block = block_claiming(100_000, 1, 0);
+        assert!(!block_stats(&block).empty);
+    }
+
+    #[test]
+    fn block_vsize_is_the_sum_of_the_transaction_vsizes() {
+        let mut block = block_claiming(100_000, 1, 0);
+        block.txdata[0].vsize = 123;
+        block.txdata[1].vsize = 456;
+        assert_eq!(block_stats(&block).vsize, 579);
+    }
+
+    #[test]
+    fn block_bits_difficulty_and_work_come_from_the_header() {
+        // the header of block 361582
+        let block = synthetic_block(361_582, vec![simple_coinbase(1)]);
+        let stats = block_stats(&block);
+        assert_eq!(stats.bits, 0x18162043);
+        assert_eq!(stats.difficulty, 49_692_386_354);
+        assert_eq!(stats.log2_work, 67.532326);
+    }
+
+    #[test]
+    fn pool_id_is_zero_when_the_pool_is_unknown() {
+        // a coinbase without any of the tags or payout addresses the pool
+        // identification knows about
+        let block = synthetic_block(800_000, vec![simple_coinbase(1)]);
+        let pools = bitcoin_pool_identification::default_data(bitcoin::Network::Bitcoin);
+        assert_eq!(block_stats_with(&block, 0, &pools).pool_id, 0);
+    }
+
+    #[test]
+    fn block_sigops_are_taken_from_the_transactions() {
+        let block = synthetic_block(800_000, vec![simple_coinbase(1)]);
+        assert_eq!(block_stats_with(&block, 4_711, &[]).sigops, 4_711);
+    }
 }
