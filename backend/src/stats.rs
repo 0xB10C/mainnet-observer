@@ -787,7 +787,10 @@ impl InputStats {
                     // coinbase input
                     continue;
                 };
-                // prevout.height=0 for same-block UTXOs, so use the txid check to detect age=0.
+                // Bitcoin Core reports the block's own height for an output
+                // created in this very block, which gives an age of zero below.
+                // The txid check is kept as a safety net in case a node ever
+                // reports a height of zero instead.
                 let is_same_block = txids_in_this_block.contains(txid);
                 if is_same_block {
                     s.inputs_spend_in_same_block += 1;
@@ -2814,5 +2817,150 @@ mod tests {
         let mut block = ephemeral_dust_block(10_000);
         block.txdata[2].fee = None;
         assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // InputStats: how old the spent outputs are
+    // ---------------------------------------------------------------------
+
+    fn input_stats(block: &Block) -> InputStats {
+        let (tx_infos, txns) = decode(block);
+        InputStats::from_block(block, "date".to_string(), &tx_infos, &txns)
+    }
+
+    const TEST_HEIGHT: i64 = 100_000;
+
+    /// A block at `TEST_HEIGHT` with one transaction spending an output per
+    /// entry of `prevout_heights`.
+    fn block_spending_outputs_from(prevout_heights: &[i64]) -> Block {
+        let outpoints: Vec<_> = (0..prevout_heights.len())
+            .map(|i| (OutPoint::new(fake_txid(i as u8 + 1), 0), Sequence::MAX))
+            .collect();
+        let tx = spending_tx(2, 0, &outpoints, &[(1_000, p2wpkh_script(1))]);
+        let prevouts = prevout_heights
+            .iter()
+            .map(|height| {
+                Some(prevout(
+                    *height,
+                    10_000,
+                    ScriptPubkeyType::Witness_v0_KeyHash,
+                ))
+            })
+            .collect();
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&tx, Some(Amount::from_sat(100)), prevouts),
+            ],
+        )
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_block_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT, TEST_HEIGHT - 1, TEST_HEIGHT - 2]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_1_blocks, 2);
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_6_blocks_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 6, TEST_HEIGHT - 7]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_6_blocks, 1);
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_144_blocks_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 144, TEST_HEIGHT - 145]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_144_blocks, 1);
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_2016_blocks_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 2016, TEST_HEIGHT - 2017]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_2016_blocks, 1);
+    }
+
+    #[test]
+    fn the_age_windows_build_on_each_other() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 1]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_spending_prev_1_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_6_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_144_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_2016_blocks, 1);
+    }
+
+    /// A block at `TEST_HEIGHT` in which a child spends an output its parent
+    /// creates in the same block. `child_prevout_height` is what the node
+    /// reports as the height of that output.
+    fn same_block_spend_block(child_prevout_height: i64) -> Block {
+        let parent = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(10_000, p2wpkh_script(1))],
+        );
+        let child = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(parent.compute_txid(), 0), Sequence::MAX)],
+            &[(9_000, p2wpkh_script(2))],
+        );
+        let fee = Some(Amount::from_sat(1_000));
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(
+                    &parent,
+                    fee,
+                    vec![Some(prevout(
+                        TEST_HEIGHT - 5_000,
+                        11_000,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+                rest_tx(
+                    &child,
+                    fee,
+                    vec![Some(prevout(
+                        child_prevout_height,
+                        10_000,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn an_output_spent_in_the_block_it_was_created_in_is_counted() {
+        // Bitcoin Core reports the block's own height for an output that was
+        // created in this very block.
+        let stats = input_stats(&same_block_spend_block(TEST_HEIGHT));
+        assert_eq!(stats.inputs_spend_in_same_block, 1);
+        // The age of the same-block spend is 0, so it falls into every window.
+        // The parent spends a 5000 block old output and falls into none.
+        assert_eq!(stats.inputs_spending_prev_1_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_2016_blocks, 1);
+    }
+
+    #[test]
+    fn a_same_block_spend_is_found_by_txid_even_with_a_zero_prevout_height() {
+        // Bitcoin Core doesn't report a height of zero here, but the txid check
+        // is kept as a safety net in case a node ever does. The age then stays
+        // zero instead of becoming the block height.
+        let stats = input_stats(&same_block_spend_block(0));
+        assert_eq!(stats.inputs_spend_in_same_block, 1);
+        assert_eq!(stats.inputs_spending_prev_1_blocks, 1);
+    }
+
+    #[test]
+    fn the_coinbase_input_is_not_counted_as_spending_an_output() {
+        let block = synthetic_block(TEST_HEIGHT, vec![simple_coinbase(1)]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_coinbase, 1);
+        assert_eq!(stats.inputs_spend_in_same_block, 0);
+        assert_eq!(stats.inputs_spending_prev_2016_blocks, 0);
     }
 }
