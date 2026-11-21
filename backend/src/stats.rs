@@ -3205,4 +3205,126 @@ mod tests {
         assert_eq!(stats.outputs_opreturn, 1);
         assert_eq!(stats.outputs_opreturn_coinbase_witness_commitment, 0);
     }
+
+    // ---------------------------------------------------------------------
+    // FeerateStats
+    // ---------------------------------------------------------------------
+
+    fn feerate_stats(block: &Block) -> FeerateStats {
+        let (tx_infos, _) = decode(block);
+        FeerateStats::from_block(block, "date".to_string(), &tx_infos)
+    }
+
+    /// A block whose transactions pay the given fees. Every transaction is
+    /// 100 vbyte and 110 byte, so a fee of 100 sat is a fee rate of 1 sat/vB.
+    fn block_with_fees(fees: &[Option<u64>]) -> Block {
+        let mut txdata = vec![simple_coinbase(1)];
+        for (i, fee) in fees.iter().enumerate() {
+            let tx = spending_tx(
+                2,
+                0,
+                &[(OutPoint::new(fake_txid(i as u8 + 1), 0), Sequence::MAX)],
+                &[(1_000, p2wpkh_script(1))],
+            );
+            let mut tx = rest_tx(&tx, fee.map(Amount::from_sat), vec![None]);
+            tx.vsize = 100;
+            tx.size = 110;
+            txdata.push(tx);
+        }
+        synthetic_block(TEST_HEIGHT, txdata)
+    }
+
+    #[test]
+    fn transactions_are_counted_in_fee_rate_bands() {
+        // two transactions per band: one at the lower boundary of the band and
+        // one just below the next one
+        let stats = feerate_stats(&block_with_fees(&[
+            Some(99),
+            Some(100),
+            Some(199),
+            Some(200),
+            Some(499),
+            Some(500),
+            Some(999),
+            Some(1_000),
+            Some(2_499),
+            Some(2_500),
+            Some(4_999),
+            Some(5_000),
+            Some(9_999),
+            Some(10_000),
+            Some(24_999),
+            Some(25_000),
+            Some(49_999),
+            Some(50_000),
+            Some(99_999),
+            Some(100_000),
+        ]));
+        assert_eq!(stats.below_1_sat_vbyte, 1);
+        assert_eq!(stats.feerate_1_2_sat_vbyte, 2);
+        assert_eq!(stats.feerate_2_5_sat_vbyte, 2);
+        assert_eq!(stats.feerate_5_10_sat_vbyte, 2);
+        assert_eq!(stats.feerate_10_25_sat_vbyte, 2);
+        assert_eq!(stats.feerate_25_50_sat_vbyte, 2);
+        assert_eq!(stats.feerate_50_100_sat_vbyte, 2);
+        assert_eq!(stats.feerate_100_250_sat_vbyte, 2);
+        assert_eq!(stats.feerate_250_500_sat_vbyte, 2);
+        assert_eq!(stats.feerate_500_1000_sat_vbyte, 2);
+        assert_eq!(stats.feerate_1000_plus_sat_vbyte, 1);
+    }
+
+    #[test]
+    fn a_transaction_paying_a_fee_of_zero_is_counted() {
+        let stats = feerate_stats(&block_with_fees(&[Some(0)]));
+        assert_eq!(stats.zero_fee_tx, 1);
+        assert_eq!(stats.below_1_sat_vbyte, 1);
+    }
+
+    #[test]
+    fn the_coinbase_is_left_out_of_the_fee_rate_stats() {
+        let stats = feerate_stats(&block_with_fees(&[]));
+        // the coinbase has a size and no fee, so counting it would show here
+        assert_eq!(stats.size_sum, 0);
+        assert_eq!(stats.zero_fee_tx, 0);
+        assert_eq!(stats.fee_min, 0);
+        assert_eq!(stats.fee_max, 0);
+        assert_eq!(stats.fee_sum, 0);
+        assert_eq!(stats.fee_avg, 0.0);
+        assert_eq!(stats.fee_50th_percentile, 0);
+        assert_eq!(stats.size_avg, 0.0);
+        assert_eq!(stats.feerate_min, 0.0);
+        assert_eq!(stats.feerate_max, 0.0);
+        assert_eq!(stats.feerate_avg, 0.0);
+        // a NaN percentile is stored as 0, the database column is NOT NULL
+        assert_eq!(stats.feerate_50th_percentile, 0.0);
+    }
+
+    #[test]
+    fn the_fee_rate_stats_of_a_single_transaction() {
+        let stats = feerate_stats(&block_with_fees(&[Some(1_000)]));
+        assert_eq!(stats.fee_min, 1_000);
+        assert_eq!(stats.fee_max, 1_000);
+        assert_eq!(stats.fee_50th_percentile, 1_000);
+        assert_eq!(stats.fee_sum, 1_000);
+        assert_eq!(stats.fee_avg, 1_000.0);
+        assert_eq!(stats.size_min, 110);
+        assert_eq!(stats.size_max, 110);
+        assert_eq!(stats.size_sum, 110);
+        assert_eq!(stats.feerate_min, 10.0);
+        assert_eq!(stats.feerate_max, 10.0);
+        assert_eq!(stats.feerate_avg, 10.0);
+    }
+
+    #[test]
+    fn the_fee_rate_stats_of_two_transactions() {
+        let stats = feerate_stats(&block_with_fees(&[Some(100), Some(300)]));
+        assert_eq!(stats.fee_min, 100);
+        assert_eq!(stats.fee_max, 300);
+        assert_eq!(stats.fee_sum, 400);
+        assert_eq!(stats.fee_avg, 200.0);
+        assert_eq!(stats.size_sum, 220);
+        assert_eq!(stats.feerate_min, 1.0);
+        assert_eq!(stats.feerate_max, 3.0);
+        assert_eq!(stats.feerate_avg, 2.0);
+    }
 }
