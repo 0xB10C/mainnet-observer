@@ -32,7 +32,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 6: add inscription stats
 // version 7: add block hash
 // version 8: add sigops
-pub const STATS_VERSION: i32 = 8;
+// version 9: count a locktime equal to the block height as too high
+pub const STATS_VERSION: i32 = 9;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -508,7 +509,14 @@ impl TxStats {
                 s.tx_timelock_not_enforced += 1;
             }
 
-            if tx.lock_time.is_block_height() && tx.lock_time.to_consensus_u32() > height as u32 {
+            // A transaction is only final in a block if its height locktime is
+            // *below* the height of that block, so a locktime equal to the
+            // block height is already too high to be satisfied here. A locktime
+            // of zero is no locktime at all, which matters in the genesis block.
+            if tx.lock_time.is_block_height()
+                && tx.lock_time.to_consensus_u32() > 0
+                && tx.lock_time.to_consensus_u32() >= height as u32
+            {
                 s.tx_timelock_too_high += 1;
             }
         }
@@ -1687,7 +1695,9 @@ mod tests {
                 tx_timelock_height: 209,
                 tx_timelock_timestamp: 0,
                 tx_timelock_not_enforced: 22,
-                tx_timelock_too_high: 0,
+                // three transactions have a locktime of 739990, which can only
+                // be satisfied in a later block
+                tx_timelock_too_high: 3,
             },
             input: InputStats {
                 height: 739990,
@@ -2645,5 +2655,32 @@ mod tests {
     fn a_locktime_is_enforced_when_a_sequence_is_not_final() {
         let stats = tx_stats(&block_with_locktime(99_999, NON_FINAL));
         assert_eq!(stats.tx_timelock_not_enforced, 0);
+    }
+
+    #[test]
+    fn a_locktime_at_or_above_the_block_height_is_too_high() {
+        // A transaction is only final in a block if its height locktime is
+        // *below* the height of that block, so a locktime equal to the block
+        // height is already unsatisfiable here. Such transactions do end up in
+        // valid blocks: with all sequences final the locktime is not enforced.
+        for (lock_time, too_high) in [(99_999, 0), (100_000, 1), (100_001, 1)] {
+            let stats = tx_stats(&block_with_locktime(lock_time, Sequence::MAX));
+            assert_eq!(
+                stats.tx_timelock_too_high, too_high,
+                "locktime {} in a block at height 100000",
+                lock_time
+            );
+        }
+    }
+
+    #[test]
+    fn a_locktime_of_zero_in_the_genesis_block_is_not_too_high() {
+        // A locktime of zero means no locktime, even at height zero, where it
+        // is otherwise equal to the block height.
+        let block = synthetic_block(
+            0,
+            vec![simple_coinbase(1), simple_spend(2, 0, Sequence::MAX, 1)],
+        );
+        assert_eq!(tx_stats(&block).tx_timelock_too_high, 0);
     }
 }
