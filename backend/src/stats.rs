@@ -3353,4 +3353,190 @@ mod tests {
         assert_eq!(stats.zero_fee_tx, 1);
         assert_eq!(stats.fee_sum, 0);
     }
+
+    // ---------------------------------------------------------------------
+    // ScriptStats
+    //
+    // Signatures and public keys can't be made up, so these tests pick the
+    // transactions they need out of the fixture blocks. Parsing a fixture is by
+    // far the most expensive thing the tests do, so each file is read and
+    // deserialized at most once per test binary and then handed out as a
+    // `&'static Block`.
+    // ---------------------------------------------------------------------
+
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Loads `testdata/<name>.json`, parsing it only the first time it is asked for.
+    fn fixture(name: &str) -> &'static Block {
+        static CACHE: OnceLock<Mutex<HashMap<String, &'static Block>>> = OnceLock::new();
+        let mut cache = CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        cache.entry(name.to_string()).or_insert_with(|| {
+            let buffer = BufReader::new(File::open(format!("./testdata/{}.json", name)).unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            &*Box::leak(Box::new(block))
+        })
+    }
+
+    /// `rest::ScriptPubkeyType` is not `Clone`, so copy it by hand.
+    fn copy_script_pubkey_type(type_: &ScriptPubkeyType) -> ScriptPubkeyType {
+        match type_ {
+            ScriptPubkeyType::Nonstandard => ScriptPubkeyType::Nonstandard,
+            ScriptPubkeyType::Pubkey => ScriptPubkeyType::Pubkey,
+            ScriptPubkeyType::PubkeyHash => ScriptPubkeyType::PubkeyHash,
+            ScriptPubkeyType::ScriptHash => ScriptPubkeyType::ScriptHash,
+            ScriptPubkeyType::MultiSig => ScriptPubkeyType::MultiSig,
+            ScriptPubkeyType::NullData => ScriptPubkeyType::NullData,
+            ScriptPubkeyType::Witness_v0_KeyHash => ScriptPubkeyType::Witness_v0_KeyHash,
+            ScriptPubkeyType::Witness_v0_ScriptHash => ScriptPubkeyType::Witness_v0_ScriptHash,
+            ScriptPubkeyType::Witness_v1_Taproot => ScriptPubkeyType::Witness_v1_Taproot,
+            ScriptPubkeyType::Witness_Unknown => ScriptPubkeyType::Witness_Unknown,
+            ScriptPubkeyType::Anchor => ScriptPubkeyType::Anchor,
+        }
+    }
+
+    fn copy_tx(tx: &RestTx) -> RestTx {
+        RestTx {
+            raw: tx.raw.clone(),
+            txid: tx.txid,
+            size: tx.size,
+            vsize: tx.vsize,
+            version: tx.version,
+            fee: tx.fee,
+            lock_time: tx.lock_time,
+            input: tx
+                .input
+                .iter()
+                .map(|input| Input {
+                    sequence: input.sequence,
+                    coinbase: input.coinbase.clone(),
+                    txid: input.txid,
+                    vout: input.vout,
+                    prevout: input.prevout.as_ref().map(|p| Prevout {
+                        height: p.height,
+                        value: p.value,
+                        script_pub_key: PrevoutScriptPubKey {
+                            type_: copy_script_pubkey_type(&p.script_pub_key.type_),
+                        },
+                    }),
+                })
+                .collect(),
+            output: tx
+                .output
+                .iter()
+                .map(|output| Output {
+                    value: output.value,
+                    n: output.n,
+                    script_pub_key: ScriptPubKey {
+                        script: output.script_pub_key.script.clone(),
+                        type_: copy_script_pubkey_type(&output.script_pub_key.type_),
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    /// A block with the header of the fixture `name` and the transactions of
+    /// that fixture at `indices`. The coinbase transaction always comes first
+    /// and only once, whether or not `indices` lists it. The header keeps the
+    /// size, stripped size and weight of the whole fixture block, so don't
+    /// assert on those.
+    fn block_from_txs(name: &str, indices: &[usize]) -> Block {
+        let source = fixture(name);
+        let mut txdata = vec![copy_tx(&source.txdata[0])];
+        txdata.extend(
+            indices
+                .iter()
+                .filter(|index| **index != 0)
+                .map(|index| copy_tx(&source.txdata[*index])),
+        );
+        Block {
+            hash: source.hash,
+            size: source.size,
+            stripped_size: source.stripped_size,
+            weight: source.weight,
+            height: source.height,
+            version: source.version,
+            txdata,
+            time: source.time,
+            nonce: source.nonce,
+            bits: source.bits.clone(),
+        }
+    }
+
+    fn script_stats(block: &Block) -> ScriptStats {
+        let (tx_infos, _) = decode(block);
+        ScriptStats::from_block(block, "date".to_string(), &tx_infos)
+    }
+
+    #[test]
+    fn ecdsa_signatures_are_counted_by_their_length() {
+        let stats = script_stats(&block_from_txs("739990", &[157, 3, 6]));
+        assert_eq!(stats.sigs_ecdsa, 3);
+        assert_eq!(stats.sigs_ecdsa_strict_der, 3);
+        assert_eq!(stats.sigs_ecdsa_length_less_70byte, 0);
+        assert_eq!(stats.sigs_ecdsa_length_70byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_71byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_72byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_73byte, 0);
+
+        let stats = script_stats(&block_from_txs("361582", &[26]));
+        assert_eq!(stats.sigs_ecdsa_length_73byte, 1);
+    }
+
+    #[test]
+    fn ecdsa_signatures_are_counted_by_their_r_and_s_value() {
+        // three signatures with a low r (one of them with a high s), one with a
+        // high r and a low s, and one with both a high r and a high s
+        let stats = script_stats(&block_from_txs("361582", &[23, 25, 26]));
+        assert_eq!(stats.sigs_ecdsa, 5);
+        assert_eq!(stats.sigs_ecdsa_low_r, 3);
+        assert_eq!(stats.sigs_ecdsa_high_r, 2);
+        assert_eq!(stats.sigs_ecdsa_low_s, 3);
+        assert_eq!(stats.sigs_ecdsa_high_s, 2);
+        assert_eq!(stats.sigs_ecdsa_low_rs, 2);
+        assert_eq!(stats.sigs_ecdsa_high_rs, 1);
+        assert_eq!(stats.sigs_ecdsa_low_r_high_s, 1);
+        assert_eq!(stats.sigs_ecdsa_high_r_low_s, 1);
+    }
+
+    #[test]
+    fn schnorr_signatures_are_counted_on_their_own() {
+        // a taproot key path spend
+        let stats = script_stats(&block_from_txs("739990", &[619]));
+        assert_eq!(stats.sigs_schnorr, 1);
+        assert_eq!(stats.sigs_ecdsa, 0);
+        // the length and sighash counters are only kept for ECDSA signatures
+        assert_eq!(stats.sigs_sighashes, 0);
+    }
+
+    #[test]
+    fn signatures_are_counted_by_their_sighash_flag() {
+        // two signatures with SIGHASH_ALL | SIGHASH_ANYONECANPAY
+        let stats = script_stats(&block_from_txs("739990", &[121]));
+        assert_eq!(stats.sigs_sighashes, 2);
+        assert_eq!(stats.sigs_sighash_all_acp, 2);
+        assert_eq!(stats.sigs_sighash_all, 0);
+    }
+
+    #[test]
+    fn public_keys_are_counted_by_whether_they_are_compressed() {
+        // three compressed keys in one transaction, one uncompressed key in another
+        let stats = script_stats(&block_from_txs("361582", &[23, 25]));
+        assert_eq!(stats.pubkeys, 4);
+        assert_eq!(stats.pubkeys_compressed, 3);
+        assert_eq!(stats.pubkeys_uncompressed, 1);
+        assert_eq!(stats.pubkeys_compressed_inputs, 3);
+        assert_eq!(stats.pubkeys_uncompressed_inputs, 1);
+        assert_eq!(stats.pubkeys_compressed_outputs, 0);
+
+        // keys in an output are counted separately
+        let stats = script_stats(&block_from_txs("739990", &[619]));
+        assert_eq!(stats.pubkeys_compressed_outputs, 1);
+        assert_eq!(stats.pubkeys_compressed_inputs, 0);
+    }
 }
