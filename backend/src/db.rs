@@ -367,6 +367,10 @@ pub struct PoolsMiningEphemeralDust {
     pub first_ephemeral_dust_date: String,
 }
 
+/// Returns, per pool, the number of blocks that contain at least one
+/// transaction spending ephemeral dust, together with the first such block.
+/// The count is a number of blocks, not a number of transactions, so that it
+/// matches the first block columns next to it.
 pub fn get_pools_mining_ephemeral_dust(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<PoolsMiningEphemeralDust>, diesel::result::Error> {
@@ -374,7 +378,7 @@ pub fn get_pools_mining_ephemeral_dust(
     r#"
         SELECT
             t.pool_id,
-            COUNT(t.tx_spending_ephemeral_dust) as count,
+            COUNT(*) as count,
             MIN(CASE WHEN t.tx_spending_ephemeral_dust > 0 THEN t.height END) AS first_ephemeral_dust_height,
             MIN(CASE WHEN t.tx_spending_ephemeral_dust > 0 THEN t.date END) AS first_ephemeral_dust_date
         FROM (
@@ -413,7 +417,7 @@ pub fn get_pools_mining_bip54_coinbase(
     r#"
         SELECT
             t.pool_id,
-            COUNT(t.coinbase_locktime_set_bip54) as count,
+            COUNT(*) as count,
             MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.height END) AS first_bip54_coinbase_height,
             MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.date END) AS first_bip54_coinbase_date
         FROM (
