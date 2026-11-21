@@ -14,8 +14,15 @@ const METRIC_TABLES: [&str; 6] = [
     "output_stats",
     "feerate_stats",
 ];
-const COLUMN_NAMES_THAT_ARENT_METRICS: [&str; 7] = [
-    "height", "date", "version", "nonce", "bits", "pool_id", "hash",
+const COLUMN_NAMES_THAT_ARENT_METRICS: [&str; 8] = [
+    "height",
+    "date",
+    "version",
+    "nonce",
+    "bits",
+    "pool_id",
+    "hash",
+    "stats_version",
 ];
 
 // An array with pool IDs based on https://github.com/bitcoin-data/mining-pools/blob/generated/pool-list.json
@@ -831,6 +838,21 @@ mod tests {
             dir.read("block_count_sum.csv"),
             "block_count_sum\n3\n2\n1\n"
         );
+    }
+
+    #[test]
+    fn no_metric_files_are_written_for_the_stats_version() {
+        let dir = TempDir::new();
+        write_csv_files(dir.path(), filled_db()).unwrap();
+
+        // The stats version says how old the stats of a block are. It is
+        // bookkeeping, not something worth charting.
+        assert!(!dir.exists("stats_version_avg.csv"));
+        assert!(!dir.exists("stats_version_sum.csv"));
+        // The other non metric columns are already left out.
+        for name in ["height_avg.csv", "nonce_sum.csv", "pool_id_avg.csv"] {
+            assert!(!dir.exists(name), "{} should not be written", name);
+        }
     }
 
     #[test]
