@@ -1131,7 +1131,9 @@ fn f64_nan_as_0(a: f64) -> f64 {
 
 impl FeerateStats {
     pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> FeerateStats {
-        let num_tx_without_coinbase = block.txdata.len() - 1;
+        // every block has a coinbase transaction, but don't underflow if one
+        // somehow arrives without it
+        let num_tx_without_coinbase = block.txdata.len().saturating_sub(1);
 
         let mut fees_sat = Vec::with_capacity(num_tx_without_coinbase);
         let mut sizes: Vec<u64> = Vec::with_capacity(num_tx_without_coinbase);
@@ -3326,5 +3328,15 @@ mod tests {
         assert_eq!(stats.feerate_min, 1.0);
         assert_eq!(stats.feerate_max, 3.0);
         assert_eq!(stats.feerate_avg, 2.0);
+    }
+
+    #[test]
+    fn the_fee_rate_stats_of_a_block_without_transactions_are_empty() {
+        // Every block has a coinbase transaction, but a block that somehow
+        // arrives without one must not take the stats generation down.
+        let block = synthetic_block(TEST_HEIGHT, vec![]);
+        let stats = feerate_stats(&block);
+        assert_eq!(stats.fee_sum, 0);
+        assert_eq!(stats.fee_avg, 0.0);
     }
 }
