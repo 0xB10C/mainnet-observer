@@ -1177,10 +1177,12 @@ impl FeerateStats {
                 _ => feerate_1000_plus_sat_vbyte += 1, // 1000 or more
             }
 
-            if let Some(fee) = tx.fee {
-                if fee.to_sat() == 0 {
-                    zero_fee_tx += 1;
-                }
+            // A transaction without a fee is treated as paying zero here, the
+            // same way it is in the fee sum, the percentiles and the bands
+            // above. Bitcoin Core reports a fee for every non-coinbase
+            // transaction, so this only matters for malformed input.
+            if fee == Amount::ZERO {
+                zero_fee_tx += 1;
             }
 
             fees_sat.push(fee.to_sat());
@@ -3338,5 +3340,17 @@ mod tests {
         let stats = feerate_stats(&block);
         assert_eq!(stats.fee_sum, 0);
         assert_eq!(stats.fee_avg, 0.0);
+    }
+
+    #[test]
+    fn a_transaction_without_a_fee_is_counted_like_one_paying_zero() {
+        // Bitcoin Core reports a fee for every non-coinbase transaction. If it
+        // ever doesn't, the missing fee is treated as zero throughout these
+        // stats - in the fee sum, in the percentiles and in the fee rate bands
+        // - so the zero fee count has to agree with that.
+        let stats = feerate_stats(&block_with_fees(&[None]));
+        assert_eq!(stats.below_1_sat_vbyte, 1);
+        assert_eq!(stats.zero_fee_tx, 1);
+        assert_eq!(stats.fee_sum, 0);
     }
 }
