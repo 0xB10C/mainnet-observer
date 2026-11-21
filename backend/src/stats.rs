@@ -2963,4 +2963,78 @@ mod tests {
         assert_eq!(stats.inputs_spend_in_same_block, 0);
         assert_eq!(stats.inputs_spending_prev_2016_blocks, 0);
     }
+
+    // ---------------------------------------------------------------------
+    // Pay-to-anchor inputs and outputs
+    // ---------------------------------------------------------------------
+
+    fn output_stats(block: &Block) -> OutputStats {
+        let (tx_infos, _) = decode(block);
+        OutputStats::from_block(block, "date".to_string(), &tx_infos)
+    }
+
+    /// The P2A output script `OP_PUSHNUM_1 OP_PUSHBYTES_2 4e73`.
+    fn p2a_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0x51, 0x02, 0x4e, 0x73])
+    }
+
+    /// A block with one transaction spending a P2A output per entry of `values`.
+    fn block_spending_anchors(values: &[u64]) -> Block {
+        let outpoints: Vec<_> = (0..values.len())
+            .map(|i| (OutPoint::new(fake_txid(i as u8 + 1), 0), Sequence::MAX))
+            .collect();
+        let tx = spending_tx(2, 0, &outpoints, &[(1_000, p2wpkh_script(1))]);
+        let prevouts = values
+            .iter()
+            .map(|value| Some(prevout(TEST_HEIGHT - 1, *value, ScriptPubkeyType::Anchor)))
+            .collect();
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&tx, Some(Amount::from_sat(100)), prevouts),
+            ],
+        )
+    }
+
+    #[test]
+    fn spent_anchor_outputs_below_240_sat_are_dust() {
+        let stats = input_stats(&block_spending_anchors(&[239, 240, 241]));
+        assert_eq!(stats.inputs_p2a, 3);
+        assert_eq!(stats.inputs_p2a_dust, 1);
+    }
+
+    #[test]
+    fn anchor_inputs_are_not_counted_as_unknown() {
+        // The input itself is empty, so it can only be recognized as an anchor
+        // spend through the type Bitcoin Core reports for the output it spends.
+        let stats = input_stats(&block_spending_anchors(&[240]));
+        assert_eq!(stats.inputs_p2a, 1);
+        assert_eq!(stats.inputs_unknown, 0);
+    }
+
+    #[test]
+    fn anchor_outputs_below_240_sat_are_dust() {
+        let tx = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[
+                (239, p2a_script()),
+                (240, p2a_script()),
+                (241, p2a_script()),
+            ],
+        );
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&tx, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        );
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_p2a, 3);
+        assert_eq!(stats.outputs_p2a_dust, 1);
+        assert_eq!(stats.outputs_p2a_amount, 720);
+    }
 }
