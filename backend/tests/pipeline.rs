@@ -163,6 +163,22 @@ fn refuses_to_run_against_a_node_in_initial_block_download() {
 }
 
 #[test]
+fn handles_a_node_with_fewer_blocks_than_the_reorg_margin() {
+    common::init_logger();
+    // A freshly started regtest node, or a node that hasn't synced past the
+    // reorg margin yet. There is nothing to fetch, which is not an error.
+    let mock = MockCore::builder().blocks(3).start();
+    let conn = common::memory_db();
+
+    collect_statistics(mock.host(), mock.port(), Arc::clone(&conn), 2, None)
+        .expect("a node with fewer blocks than the reorg margin is not an error");
+
+    assert_eq!(mock.requests(Endpoint::BlockHash), 0);
+    let mut conn = conn.lock().unwrap();
+    assert_eq!(common::row_count(&mut conn, "block_stats"), 0);
+}
+
+#[test]
 fn skips_blocks_whose_stats_are_current_and_redoes_the_outdated_ones() {
     common::init_logger();
     const MARKER_NONCE: i32 = 424242;

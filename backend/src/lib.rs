@@ -170,8 +170,9 @@ pub fn collect_statistics(
     // To determine which blocks to fetch and write to (or override in) the database:
     // 1. Get the height the node considers to be the tip
     let rest_height = chain_info.blocks;
-    // 2. Substract an reorg margin.
-    let fetch_height = std::cmp::max(0, rest_height - REORG_SAFETY_MARGIN);
+    // 2. Substract an reorg margin. A node that doesn't have more blocks than
+    //    the margin leaves us with nothing to fetch.
+    let fetch_height = rest_height.saturating_sub(REORG_SAFETY_MARGIN);
     // 3. Get a list of block heights where our block_stats stats_version is up-to-date
     //    (i.e. stats are already at the newest version)
     let uptodate_heights: BTreeSet<i64> = {
