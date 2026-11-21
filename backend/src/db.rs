@@ -715,3 +715,79 @@ fn insert_feerate_stats(
         .execute(conn)?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rest::Block;
+    use serde::Deserialize;
+    use std::fs::File;
+    use std::io::BufReader;
+
+    fn fixture_stats() -> Stats {
+        let buffer = BufReader::new(File::open("./testdata/361582.json").unwrap());
+        let mut de = serde_json::Deserializer::from_reader(buffer);
+        let block = Block::deserialize(&mut de).expect("test block json to be valid");
+        Stats::from_block(block).expect("test block should produce stats")
+    }
+
+    #[test]
+    fn migrations_can_be_reverted_and_run_again() {
+        let mut conn = SqliteConnection::establish(":memory:").unwrap();
+        conn.run_pending_migrations(MIGRATIONS).unwrap();
+        assert!(!conn.has_pending_migration(MIGRATIONS).unwrap());
+
+        // Runs every down.sql.
+        conn.revert_all_migrations(MIGRATIONS).unwrap();
+        assert!(conn.has_pending_migration(MIGRATIONS).unwrap());
+
+        conn.run_pending_migrations(MIGRATIONS).unwrap();
+        assert!(!conn.has_pending_migration(MIGRATIONS).unwrap());
+        assert_eq!(get_db_block_height(&mut conn).unwrap(), None);
+    }
+
+    #[test]
+    fn a_stats_row_round_trips_through_all_six_tables() {
+        // Catches drift between the migrations, schema.rs and the stats
+        // structs: every column has to exist with a matching type.
+        let mut conn = open_db_and_run_migrations(":memory:").unwrap();
+        let stats = fixture_stats();
+        insert_stats(&mut conn, std::slice::from_ref(&stats)).unwrap();
+
+        let block: BlockStats = schema::block_stats::table
+            .select(BlockStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(block, stats.block);
+
+        let tx: TxStats = schema::tx_stats::table
+            .select(TxStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(tx, stats.tx);
+
+        let input: InputStats = schema::input_stats::table
+            .select(InputStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(input, stats.input);
+
+        let output: OutputStats = schema::output_stats::table
+            .select(OutputStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(output, stats.output);
+
+        let script: ScriptStats = schema::script_stats::table
+            .select(ScriptStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(script, stats.script);
+
+        let feerate: FeerateStats = schema::feerate_stats::table
+            .select(FeerateStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(feerate, stats.feerate);
+    }
+}
