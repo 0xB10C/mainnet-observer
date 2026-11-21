@@ -3541,4 +3541,30 @@ mod tests {
         assert_eq!(stats.pubkeys_compressed_outputs, 1);
         assert_eq!(stats.pubkeys_compressed_inputs, 0);
     }
+
+    // ---------------------------------------------------------------------
+    // Stats::from_block
+    // ---------------------------------------------------------------------
+
+    use super::StatsError;
+
+    #[test]
+    fn a_transaction_that_does_not_decode_is_an_error() {
+        let mut block = synthetic_block(TEST_HEIGHT, vec![simple_coinbase(1)]);
+        block.txdata[0].raw.truncate(10);
+        match Stats::from_block(block) {
+            Err(StatsError::BitcoinEncode(_)) => (),
+            other => panic!("expected a decode error, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn the_date_is_the_day_of_the_block_timestamp() {
+        let mut block = synthetic_block(TEST_HEIGHT, vec![simple_coinbase(1)]);
+        // 2015-06-19 06:13:20 UTC
+        block.time = 1_434_694_400;
+        let stats = Stats::from_block(block).expect("the stats to be computed");
+        assert_eq!(stats.block.date, "2015-06-19");
+        assert_eq!(stats.tx.date, "2015-06-19");
+    }
 }
