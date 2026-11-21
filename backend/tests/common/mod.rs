@@ -30,7 +30,7 @@ use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -300,6 +300,7 @@ struct Shared {
     body_by_hash: HashMap<String, BlockBody>,
     faults: Mutex<HashMap<Endpoint, Fault>>,
     requests: Mutex<Requests>,
+    connections: AtomicUsize,
     running: AtomicBool,
 }
 
@@ -352,6 +353,12 @@ impl MockCore {
         heights.sort_unstable();
         heights.dedup();
         heights
+    }
+
+    /// How many TCP connections the clients opened. A client that keeps its
+    /// connections alive opens far fewer of them than it makes requests.
+    pub fn connections(&self) -> usize {
+        self.shared.connections.load(Ordering::Relaxed)
     }
 }
 
@@ -440,6 +447,7 @@ impl MockCoreBuilder {
             body_by_hash: self.body_by_hash,
             faults: Mutex::new(self.faults),
             requests: Mutex::new(Requests::default()),
+            connections: AtomicUsize::new(0),
             running: AtomicBool::new(true),
         });
 
@@ -454,6 +462,7 @@ impl MockCoreBuilder {
             while accept_shared.running.load(Ordering::Relaxed) {
                 match listener.accept() {
                     Ok((stream, _)) => {
+                        accept_shared.connections.fetch_add(1, Ordering::Relaxed);
                         let shared = Arc::clone(&accept_shared);
                         // The connection threads are deliberately detached:
                         // they block on a read until the client closes the

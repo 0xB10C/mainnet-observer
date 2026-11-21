@@ -118,7 +118,7 @@ fn gives_up_and_stops_the_other_threads_when_the_retries_run_out() {
 
     match result {
         Err(MainError::REST(e)) => assert!(
-            e.to_string().contains("500"),
+            e.to_string().contains("http status: 500"),
             "expected the injected HTTP 500 to be reported, got: {}",
             e
         ),
