@@ -287,24 +287,24 @@ pub fn collect_statistics(
             let stat_sender_clone = stat_sender.clone();
             rayon::spawn(move || {
                 let stats_result = Stats::from_block(block);
-                if let Err(e) = stats_result {
+                if let Err(e) = &stats_result {
+                    // We can't continue here and probably need to fix something
+                    // in rawtx_rs.. The error is passed on to the batch-insert
+                    // task, which stops the run. Panicking here would take the
+                    // whole process down with it: rayon has no panic handler
+                    // installed, so a panic on one of its workers aborts.
                     error!(
                         "Could not calculate stats for block at height {}: {}",
                         height, e
                     );
-                    // We can't continue here and probably need to fix something
-                    // in rawtx_rs..
-                    panic!(
-                        "Could not process block {}: {}",
-                        height,
-                        MainError::Stats(e)
-                    );
                 };
-                if let Err(e) = stat_sender_clone.send(stats_result) {
-                    // We can't continue here..
-                    panic!(
-                        "during sending stats at height {} to db writer: stats receiver dropped: {}",
-                        height, e
+                if stat_sender_clone.send(stats_result).is_err() {
+                    // The batch-insert task is gone, so there is nobody left to
+                    // hand these stats to. It (or another block) already failed
+                    // the run.
+                    warn!(
+                        "during sending stats at height {} to db writer: stats receiver dropped",
+                        height
                     );
                 } else {
                     debug!("calc-stats: processed block at height {}", height);

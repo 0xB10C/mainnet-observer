@@ -303,6 +303,37 @@ fn writes_the_final_partial_batch() {
     );
 }
 
+#[test]
+fn fails_when_the_stats_of_a_block_cannot_be_generated() {
+    common::init_logger();
+    let mock = MockCore::builder()
+        .blocks(tip_for_last_fetched_height(361581))
+        .block_at(361580, "361582")
+        // A block whose first transaction doesn't decode. Bitcoin Core would
+        // never serve this, but a bug in our parsing or in rawtx-rs looks
+        // exactly like it.
+        .raw_block_at(361581, block_with_undecodable_transaction("361582"))
+        .start();
+    let conn = common::memory_db();
+
+    let result = collect_statistics(mock.host(), mock.port(), Arc::clone(&conn), 1, Some(361580));
+
+    assert!(
+        matches!(result, Err(MainError::Stats(_))),
+        "a block whose stats can't be generated has to fail the run, got {:?}",
+        result
+    );
+}
+
+/// Takes a block fixture and replaces the raw hex of its first transaction
+/// with something that isn't a transaction.
+fn block_with_undecodable_transaction(fixture: &str) -> String {
+    let mut block: serde_json::Value =
+        serde_json::from_str(&common::fixture(fixture)).expect("fixture json");
+    block["tx"][0]["hex"] = serde_json::Value::String("00".to_string());
+    serde_json::to_string(&block).expect("serialize block json")
+}
+
 /// The mock accepts the connection and closes it without answering, like a
 /// node that goes away mid-request.
 #[test]
