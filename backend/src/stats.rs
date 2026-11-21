@@ -462,8 +462,11 @@ impl TxStats {
                     .take(&(txid, *vout))
                     .is_some()
                     && tx.version == 3
-                    // unwrap safety: we filter for non-coinbase inputs above, hence this transaction is non-coinbase
-                    && tx.fee.unwrap() != Amount::ZERO
+                    // We filter for non-coinbase inputs above, so Bitcoin Core
+                    // reports a fee for this transaction. If it ever doesn't,
+                    // we can't tell whether the child paid for the dust, so we
+                    // don't count it.
+                    && tx.fee.is_some_and(|fee| fee != Amount::ZERO)
                     && tx.vsize <= 1_000;
 
                 if (tx_spending_ephemeral_dust || ephemeral_dust_outpoints_in_this_block.is_empty())
@@ -2801,6 +2804,15 @@ mod tests {
         block.txdata[2].vsize = 1_000;
         assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 1);
         block.txdata[2].vsize = 1_001;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_is_not_counted_when_the_child_has_no_fee_set() {
+        // Bitcoin Core reports a fee for every non-coinbase transaction, but
+        // the stats must not panic if it ever doesn't.
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].fee = None;
         assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
     }
 }
