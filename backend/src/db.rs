@@ -222,7 +222,8 @@ pub fn blocks_per_day_top5_pool_groups(
             WHERE pool_id IN ({})
             GROUP BY t."date", subquery.total_count
             ORDER BY t."date" DESC
-            LIMIT (356 * 6)
+            -- keep the most recent 2190 days (about six years) that have a top-5 block
+            LIMIT (365 * 6)
         ) X
         ORDER BY "date" ASC;
         "#,

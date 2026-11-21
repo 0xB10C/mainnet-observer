@@ -395,6 +395,26 @@ fn blocks_per_day_top5_pool_groups_drops_days_without_a_listed_pool() {
 }
 
 #[test]
+fn blocks_per_day_top5_pool_groups_returns_six_years_of_days() {
+    let mut conn = fresh_db();
+    let total_days = 365 * 6 + 10;
+    let rows: Vec<Stats> = (0..total_days)
+        .map(|i| stats_row(1000 + i as i64, &format!("{:04}-01-01", 1000 + i), 1))
+        .collect();
+    insert_block_rows(&mut conn, &rows);
+
+    let groups = [vec![1], vec![-1], vec![-1], vec![-1], vec![-1]];
+    let result = db::blocks_per_day_top5_pool_groups(&mut conn, &groups).unwrap();
+    assert_eq!(
+        result.len(),
+        365 * 6,
+        "the query should keep 365 days for each of the six years"
+    );
+    // Only the most recent days are kept, so the ten oldest days are missing.
+    assert_eq!(result[0].date, format!("{:04}-01-01", 1010));
+}
+
+#[test]
 fn mining_centralization_index_ranks_the_pools_of_a_day() {
     let mut conn = fresh_db();
     let mut rows = Vec::new();
