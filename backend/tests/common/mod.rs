@@ -179,6 +179,8 @@ enum FaultKind {
     Delay(Duration),
     /// Answer with a body of our choosing (status 200).
     Body(String),
+    /// Answer with a body of `bytes` bytes.
+    Oversized(usize),
 }
 
 impl Fault {
@@ -215,6 +217,14 @@ impl Fault {
     pub fn body(body: &str) -> Fault {
         Fault {
             kind: FaultKind::Body(body.to_string()),
+            times: usize::MAX,
+        }
+    }
+
+    /// Answer every request with a body of `bytes` bytes.
+    pub fn oversized(bytes: usize) -> Fault {
+        Fault {
+            kind: FaultKind::Oversized(bytes),
             times: usize::MAX,
         }
     }
@@ -597,6 +607,7 @@ fn apply_fault(writer: &mut TcpStream, kind: FaultKind) -> bool {
         // Handled before the normal answer in handle_request.
         FaultKind::Delay(_) => true,
         FaultKind::Body(body) => respond(writer, 200, "application/json", body.as_bytes()),
+        FaultKind::Oversized(bytes) => respond_oversized(writer, bytes),
     }
 }
 
@@ -610,6 +621,34 @@ fn respond(writer: &mut TcpStream, status: u16, content_type: &str, body: &[u8])
         body.len()
     );
     writer.write_all(header.as_bytes()).is_ok() && writer.write_all(body).is_ok()
+}
+
+/// Writes a response with a body of `bytes` bytes without holding all of it in
+/// memory, so a test can push the client past its body size limit.
+///
+/// The body is a JSON object with one very long string value, so a client that
+/// parses while it reads doesn't stop early on something that isn't JSON.
+fn respond_oversized(writer: &mut TcpStream, bytes: usize) -> bool {
+    const PREFIX: &[u8] = br#"{"filler":""#;
+    let header = format!(
+        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n",
+        bytes
+    );
+    if writer.write_all(header.as_bytes()).is_err() || writer.write_all(PREFIX).is_err() {
+        return false;
+    }
+    let chunk = vec![b'a'; 64 * 1024];
+    let mut written = PREFIX.len();
+    while written < bytes {
+        let len = chunk.len().min(bytes - written);
+        // The client gives up once it hits its limit, so a write error here
+        // is the expected outcome and not a test failure.
+        if writer.write_all(&chunk[..len]).is_err() {
+            return false;
+        }
+        written += len;
+    }
+    false
 }
 
 fn reason(status: u16) -> &'static str {
