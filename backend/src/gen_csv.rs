@@ -44,7 +44,7 @@ pub fn date_csv(csv_path: &str, connection: Arc<Mutex<SqliteConnection>>) -> Res
     let connection = Arc::clone(&connection);
     let mut conn = connection.lock().unwrap();
     info!("Generating date.csv file...");
-    let date_column = db::date_column(&mut conn);
+    let date_column = db::date_column(&mut conn)?;
     let mut date_file = std::fs::File::create(format!("{}/date.csv", csv_path))?;
     let date_content: String = date_column
         .iter()
@@ -75,7 +75,7 @@ pub fn metrics_csv(
 
         for column in columns_filtered.iter().map(|col| col.name.clone()) {
             info!("Generating metrics for '{}' in table '{}'.", column, table);
-            let avg_and_sum = db::column_sum_and_avg_by_date(&mut conn, &column, table);
+            let avg_and_sum = db::column_sum_and_avg_by_date(&mut conn, &column, table)?;
 
             let mut avg_file = std::fs::File::create(format!("{}/{}_avg.csv", csv_path, column))?;
             let avg_content: String = avg_and_sum
@@ -104,7 +104,7 @@ pub fn coinbase_subsidy_and_fees_csv(
     let connection = Arc::clone(&connection);
     let mut conn = connection.lock().unwrap();
     info!("Generating coinbase subsidy and fees CSV files...");
-    let rows = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn);
+    let rows = db::coinbase_subsidy_and_fees_avg_by_date(&mut conn)?;
 
     let mut subsidy_file = std::fs::File::create(format!("{}/coinbase_subsidy_avg.csv", csv_path))?;
     subsidy_file.write_all("coinbase_subsidy_avg\n".as_bytes())?;
