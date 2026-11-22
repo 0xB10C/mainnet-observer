@@ -3013,9 +3013,10 @@ mod tests {
 
     #[test]
     fn spent_anchor_outputs_below_240_sat_are_dust() {
-        let stats = input_stats(&block_spending_anchors(&[239, 240, 241]));
-        assert_eq!(stats.inputs_p2a, 3);
-        assert_eq!(stats.inputs_p2a_dust, 1);
+        let stats = input_stats(&block_spending_anchors(&[100, 239, 240, 241]));
+        assert_eq!(stats.inputs_p2a, 4);
+        // every value below 240 sat counts, not just the one right below it
+        assert_eq!(stats.inputs_p2a_dust, 2);
     }
 
     #[test]
@@ -3034,6 +3035,7 @@ mod tests {
             0,
             &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
             &[
+                (100, p2a_script()),
                 (239, p2a_script()),
                 (240, p2a_script()),
                 (241, p2a_script()),
@@ -3047,9 +3049,10 @@ mod tests {
             ],
         );
         let stats = output_stats(&block);
-        assert_eq!(stats.outputs_p2a, 3);
-        assert_eq!(stats.outputs_p2a_dust, 1);
-        assert_eq!(stats.outputs_p2a_amount, 720);
+        assert_eq!(stats.outputs_p2a, 4);
+        // every value below 240 sat counts, not just the one right below it
+        assert_eq!(stats.outputs_p2a_dust, 2);
+        assert_eq!(stats.outputs_p2a_amount, 820);
     }
 
     #[test]
