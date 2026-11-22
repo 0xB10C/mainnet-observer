@@ -11,7 +11,7 @@ use serde::Deserialize;
 
 // --- serde_hex -------------------------------------------------------------
 
-#[derive(Deserialize)]
+#[derive(Debug, Deserialize)]
 struct Hex {
     #[serde(with = "mainnet_observer_backend::rest::serde_hex")]
     value: Vec<u8>,
@@ -68,6 +68,44 @@ fn serde_hex_opt_handles_a_missing_value() {
     );
 }
 
+/// The error of a value that isn't a hex string has to say what was expected,
+/// otherwise a changed block JSON is a riddle to debug.
+#[test]
+fn serde_hex_errors_say_that_a_hex_string_was_expected() {
+    let error = serde_json::from_str::<Hex>(r#"{"value":1234}"#).expect_err("not a string");
+    assert!(
+        error.to_string().contains("expected a hex string"),
+        "unhelpful error: {}",
+        error
+    );
+
+    // Something that is neither a string nor null nor missing. serde_json
+    // never hands the optional visitor anything but those three, so this
+    // takes a deserializer of a value of its own.
+    let error = mainnet_observer_backend::rest::serde_hex::opt::deserialize::<_, Vec<u8>>(
+        serde::de::value::BoolDeserializer::<serde::de::value::Error>::new(true),
+    )
+    .expect_err("a bool is not an optional hex string");
+    assert!(
+        error
+            .to_string()
+            .contains("expected an optional hex string"),
+        "unhelpful error: {}",
+        error
+    );
+}
+
+/// A format that reports "no value" as a unit rather than as `None` must end
+/// up with `None` all the same.
+#[test]
+fn serde_hex_opt_reads_a_unit_as_no_value() {
+    let value = mainnet_observer_backend::rest::serde_hex::opt::deserialize::<_, Vec<u8>>(
+        serde::de::value::UnitDeserializer::<serde::de::value::Error>::new(),
+    )
+    .expect("a unit is an absent value");
+    assert_eq!(value, None);
+}
+
 // --- ScriptPubkeyType ------------------------------------------------------
 
 fn script_type(name: &str) -> ScriptPubkeyType {
@@ -118,6 +156,17 @@ fn script_pubkey_type_falls_back_to_unknown() {
     assert_eq!(
         block.txdata[0].output[0].script_pub_key.type_,
         ScriptPubkeyType::Unknown
+    );
+}
+
+#[test]
+fn script_pubkey_type_error_says_what_was_expected() {
+    let error =
+        serde_json::from_str::<ScriptPubkeyType>("123").expect_err("a number is not a script type");
+    assert!(
+        error.to_string().contains("expected a scriptPubKey type"),
+        "unhelpful error: {}",
+        error
     );
 }
 
@@ -340,6 +389,30 @@ fn block_at_height_returns_the_block() {
 
     assert_eq!(block.height, 50, "the mock serves the fixture at height 50");
     assert_eq!(block.hash.to_string(), common::hash_at_height(50));
+}
+
+/// The limit has to leave room for a real block. Mainnet blocks are a few
+/// megabytes, and the JSON with all prevouts is a multiple of that.
+#[test]
+fn block_at_height_reads_a_block_of_several_megabytes() {
+    const FILLER: usize = 4 * 1024 * 1024;
+    let mut json: serde_json::Value =
+        serde_json::from_str(&common::fixture("361582")).expect("fixture json");
+    // A field the Block struct doesn't parse, only there to make the body big.
+    json["filler"] = serde_json::Value::String("a".repeat(FILLER));
+    let body = serde_json::to_string(&json).expect("block json");
+    assert!(body.len() > FILLER);
+
+    let mock = MockCore::builder()
+        .blocks(100)
+        .raw_block_at(50, body)
+        .start();
+    let client = RestClient::new(mock.host(), mock.port(), 1);
+
+    let block = client
+        .block_at_height(50)
+        .expect("a block of a few megabytes is well below the limit");
+    assert_eq!(block.height, 361582);
 }
 
 /// The client caps the block body at 50 MB. A node that answers with more
