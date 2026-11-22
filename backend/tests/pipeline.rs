@@ -11,7 +11,7 @@ use mainnet_observer_backend::stats::STATS_VERSION;
 use mainnet_observer_backend::REORG_SAFETY_MARGIN;
 use mainnet_observer_backend::{collect_statistics, db, write_csv_files, MainError};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 /// `collect_statistics` fetches `0..(chaininfo.blocks - REORG_SAFETY_MARGIN)`,
 /// so this is the tip a node needs to report for `height` to be the last block
@@ -80,8 +80,10 @@ fn retries_a_block_that_fails_to_fetch_a_few_times() {
         .start();
     let conn = common::memory_db();
 
+    let started = Instant::now();
     collect_statistics(mock.host(), mock.port(), Arc::clone(&conn), 1, Some(361582))
         .expect("the sync should survive a transient failure");
+    let elapsed = started.elapsed();
 
     {
         let mut conn = conn.lock().unwrap();
@@ -90,6 +92,13 @@ fn retries_a_block_that_fails_to_fetch_a_few_times() {
     // Two failed attempts plus the one that worked.
     assert_eq!(mock.requests(Endpoint::Block), 3);
     assert_eq!(mock.requests(Endpoint::BlockHash), 3);
+    // The waits double: 500 ms before the second attempt, 1000 ms before the
+    // third one. Hammering a node that just failed is what we want to avoid.
+    assert!(
+        elapsed >= Duration::from_millis(1400),
+        "the two retries waited only {:?}",
+        elapsed
+    );
 }
 
 #[test]
@@ -108,12 +117,24 @@ fn gives_up_and_stops_the_other_threads_when_the_retries_run_out() {
         .start();
     let conn = common::memory_db();
 
+    let started = Instant::now();
     let result = collect_statistics(
         mock.host(),
         mock.port(),
         Arc::clone(&conn),
         THREADS,
         Some(FIRST_HEIGHT),
+    );
+    let elapsed = started.elapsed();
+
+    // Four waits of 500, 1000, 2000 and 4000 ms before the five attempts are
+    // used up, 7.5 s in total. There is no point in waiting again after the
+    // last one, which would add 8 s; the bound sits between the two with room
+    // for a slow machine.
+    assert!(
+        elapsed < Duration::from_secs(14),
+        "giving up took {:?}, the last attempt waited before failing",
+        elapsed
     );
 
     match result {
