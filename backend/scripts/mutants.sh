@@ -31,6 +31,19 @@ set -euo pipefail
 
 cd "$(dirname "$(readlink -f "$0")")/.."
 
+# cargo-mutants builds every mutant in its own copy of the source tree under
+# $TMPDIR, and a small tmpfs /tmp fills up long before a run is done. Build on
+# the big disk instead, unless the caller picked a $TMPDIR themselves. The nix
+# shell points $TMPDIR at its own scratch directory under /tmp, which does not
+# count as picking one.
+case "${TMPDIR:-}" in
+"" | */nix-shell-*)
+    TMPDIR="$HOME/.cache/mainnet-observer-mutants"
+    mkdir -p "$TMPDIR"
+    export TMPDIR
+    ;;
+esac
+
 # Default to -j 2 so a run doesn't swamp a shared machine. Raise it on an
 # idle box. Only applied when the caller didn't pass -j / --jobs themselves.
 jobs_args=(-j 2)
