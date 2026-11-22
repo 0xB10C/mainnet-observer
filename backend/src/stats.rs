@@ -3859,6 +3859,17 @@ mod tests {
         assert_eq!(stats.sigs_sighash_single_acp, 1);
     }
 
+    #[test]
+    fn an_uncompressed_public_key_in_an_output_is_counted() {
+        let stats = script_stats(&block_with_outputs(1_000, &[p2pk_script(false)]));
+        // one in the coinbase and one in the transaction after it
+        assert_eq!(stats.pubkeys, 2);
+        assert_eq!(stats.pubkeys_uncompressed, 2);
+        assert_eq!(stats.pubkeys_uncompressed_outputs, 2);
+        assert_eq!(stats.pubkeys_compressed_outputs, 0);
+        assert_eq!(stats.pubkeys_uncompressed_inputs, 0);
+    }
+
     // ---------------------------------------------------------------------
     // Stats::from_block
     // ---------------------------------------------------------------------
