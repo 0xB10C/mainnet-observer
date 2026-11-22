@@ -17,4 +17,5 @@ frontend/public
 
 # coverage and mutation testing output
 mutants.out/
+mutants.out.old/
 lcov.info
