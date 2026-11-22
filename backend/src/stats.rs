@@ -3216,6 +3216,143 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // OutputStats: the output types
+    // ---------------------------------------------------------------------
+
+    /// A public key on the curve, compressed (33 byte) or uncompressed (65 byte).
+    fn pubkey_bytes(compressed: bool) -> Vec<u8> {
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secret = bitcoin::secp256k1::SecretKey::from_slice(&[0x11; 32])
+            .expect("the secret key to be valid");
+        let public = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        if compressed {
+            public.serialize().to_vec()
+        } else {
+            public.serialize_uncompressed().to_vec()
+        }
+    }
+
+    /// A P2PK output script: `<pubkey> OP_CHECKSIG`.
+    fn p2pk_script(compressed: bool) -> ScriptBuf {
+        let key = pubkey_bytes(compressed);
+        let mut v = vec![key.len() as u8];
+        v.extend(key);
+        v.push(0xac);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A bare 1-of-1 multisig output script.
+    fn p2ms_script() -> ScriptBuf {
+        let key = pubkey_bytes(true);
+        let mut v = vec![0x51, key.len() as u8];
+        v.extend(key);
+        v.extend([0x51, 0xae]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A P2WSH output script.
+    fn p2wsh_script() -> ScriptBuf {
+        let mut v = vec![0x00, 0x20];
+        v.extend([0x22; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A P2TR output script.
+    fn p2tr_script() -> ScriptBuf {
+        let mut v = vec![0x51, 0x20];
+        v.extend([0x33; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A script that is none of the known output types: `OP_PUSHNUM_2 OP_ADD`.
+    fn unknown_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0x52, 0x93])
+    }
+
+    /// A block whose coinbase and whose second transaction both pay
+    /// `value_sat` to each of `scripts`.
+    fn block_with_outputs(value_sat: u64, scripts: &[ScriptBuf]) -> Block {
+        let outputs: Vec<(u64, ScriptBuf)> = scripts
+            .iter()
+            .map(|script| (value_sat, script.clone()))
+            .collect();
+        let coinbase = coinbase_tx(&outputs, 0, Sequence::MAX);
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &outputs,
+        );
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                rest_tx(&coinbase, None, vec![None]),
+                rest_tx(
+                    &spend,
+                    Some(Amount::from_sat(100)),
+                    vec![Some(prevout(
+                        TEST_HEIGHT - 10,
+                        1_100,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn pay_to_public_key_outputs_are_counted_with_their_amount() {
+        let stats = output_stats(&block_with_outputs(1_000, &[p2pk_script(true)]));
+        assert_eq!(stats.outputs_p2pk, 2);
+        assert_eq!(stats.outputs_p2pk_amount, 2_000);
+        assert_eq!(stats.outputs_coinbase_p2pk, 1);
+    }
+
+    #[test]
+    fn bare_multisig_outputs_are_counted_with_their_amount() {
+        let stats = output_stats(&block_with_outputs(1_000, &[p2ms_script()]));
+        assert_eq!(stats.outputs_p2ms, 2);
+        assert_eq!(stats.outputs_p2ms_amount, 2_000);
+        assert_eq!(stats.outputs_coinbase_p2ms, 1);
+    }
+
+    #[test]
+    fn outputs_of_an_unknown_type_are_counted_with_their_amount() {
+        let stats = output_stats(&block_with_outputs(1_000, &[unknown_script()]));
+        assert_eq!(stats.outputs_unknown, 2);
+        assert_eq!(stats.outputs_unknown_amount, 2_000);
+        assert_eq!(stats.outputs_coinbase_unknown, 1);
+    }
+
+    #[test]
+    fn the_amount_burned_in_an_op_return_output_is_counted() {
+        // OP_RETURN OP_PUSHBYTES_3 010203
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03]);
+        let stats = output_stats(&block_with_outputs(1_000, &[script]));
+        assert_eq!(stats.outputs_opreturn, 2);
+        assert_eq!(stats.outputs_opreturn_amount, 2_000);
+    }
+
+    #[test]
+    fn the_coinbase_outputs_are_counted_for_every_script_type() {
+        let stats = output_stats(&block_with_outputs(
+            1_000,
+            &[
+                p2pk_script(true),
+                p2ms_script(),
+                p2wsh_script(),
+                p2tr_script(),
+                unknown_script(),
+            ],
+        ));
+        assert_eq!(stats.outputs_coinbase, 5);
+        assert_eq!(stats.outputs_coinbase_p2pk, 1);
+        assert_eq!(stats.outputs_coinbase_p2ms, 1);
+        assert_eq!(stats.outputs_coinbase_p2wsh, 1);
+        assert_eq!(stats.outputs_coinbase_p2tr, 1);
+        assert_eq!(stats.outputs_coinbase_unknown, 1);
+    }
+
     // FeerateStats
     // ---------------------------------------------------------------------
 
