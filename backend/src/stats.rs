@@ -3693,6 +3693,173 @@ mod tests {
     }
 
     // ---------------------------------------------------------------------
+    // InputStats and ScriptStats: the signatures in an input
+    //
+    // The signatures here are made up: they are DER encoded and parse, but they
+    // don't sign anything. That is enough for the stats, which only look at the
+    // shape of a signature, and it is the only way to get at the odd lengths,
+    // encodings and sighash flags that the fixture blocks don't contain.
+    // ---------------------------------------------------------------------
+
+    /// A single data push of up to 75 bytes.
+    fn push(data: &[u8]) -> Vec<u8> {
+        let mut v = vec![data.len() as u8];
+        v.extend(data);
+        v
+    }
+
+    /// A DER encoded ECDSA signature with the sighash flag appended:
+    /// `0x30 <length> 0x02 <length of r> <r> 0x02 <length of s> <s> <sighash>`.
+    fn der_signature(r: &[u8], s: &[u8], sighash: u8) -> Vec<u8> {
+        let mut v = vec![0x30, (4 + r.len() + s.len()) as u8, 0x02, r.len() as u8];
+        v.extend(r);
+        v.extend([0x02, s.len() as u8]);
+        v.extend(s);
+        v.push(sighash);
+        v
+    }
+
+    /// A positive, minimally encoded DER integer of `length` byte.
+    fn der_integer(length: usize) -> Vec<u8> {
+        let mut v = vec![0x11];
+        v.extend(vec![0x22; length - 1]);
+        v
+    }
+
+    /// A strictly DER encoded signature of 71 byte with the given sighash flag.
+    fn signature(sighash: u8) -> Vec<u8> {
+        der_signature(&der_integer(32), &der_integer(32), sighash)
+    }
+
+    /// A signature of `length` byte. Up to 73 byte it is strictly DER encoded;
+    /// anything longer is padded with the leading zero bytes that only the lax
+    /// DER parser accepts.
+    fn signature_of_length(length: usize) -> Vec<u8> {
+        let (r, s) = if length <= 73 {
+            let r_length = (length - 7) / 2;
+            (der_integer(r_length), der_integer(length - 7 - r_length))
+        } else {
+            let mut r = vec![0x00];
+            r.extend(der_integer(32));
+            let mut s = vec![0x00; length - 7 - r.len() - 32];
+            s.extend(der_integer(32));
+            (r, s)
+        };
+        let signature = der_signature(&r, &s, 0x01);
+        assert_eq!(signature.len(), length);
+        signature
+    }
+
+    /// A signature that only the lax DER parser accepts: its R value is
+    /// negative, which a strictly DER encoded signature never is.
+    fn not_strictly_der_encoded_signature() -> Vec<u8> {
+        let mut r = vec![0x80];
+        r.extend(vec![0x22; 31]);
+        der_signature(&r, &der_integer(32), 0x01)
+    }
+
+    /// A P2PK script_sig: `<signature>`.
+    fn p2pk_script_sig(signature: &[u8]) -> ScriptBuf {
+        ScriptBuf::from_bytes(push(signature))
+    }
+
+    /// A bare multisig script_sig: `OP_0 <signature>`.
+    fn p2ms_script_sig(signature: &[u8]) -> ScriptBuf {
+        let mut v = vec![0x00];
+        v.extend(push(signature));
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A block with one transaction per script_sig, each spending a single
+    /// output with that script_sig and without a witness.
+    fn block_with_script_sigs(script_sigs: &[ScriptBuf]) -> Block {
+        let mut txdata = vec![simple_coinbase(1)];
+        for (index, script_sig) in script_sigs.iter().enumerate() {
+            let mut tx = spending_tx(
+                2,
+                0,
+                &[(OutPoint::new(fake_txid(index as u8 + 1), 0), Sequence::MAX)],
+                &[(1_000, p2wpkh_script(1))],
+            );
+            tx.input[0].script_sig = script_sig.clone();
+            txdata.push(rest_tx(
+                &tx,
+                Some(Amount::from_sat(100)),
+                vec![Some(prevout(
+                    TEST_HEIGHT - 10,
+                    1_100,
+                    ScriptPubkeyType::Pubkey,
+                ))],
+            ));
+        }
+        synthetic_block(TEST_HEIGHT, txdata)
+    }
+
+    #[test]
+    fn pay_to_public_key_inputs_are_counted() {
+        let block = block_with_script_sigs(&[p2pk_script_sig(&signature(0x01))]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_p2pk, 1);
+        assert_eq!(stats.inputs_spending_legacy, 1);
+        assert_eq!(stats.inputs_p2sh, 0);
+    }
+
+    #[test]
+    fn bare_multisig_inputs_are_counted() {
+        let block = block_with_script_sigs(&[p2ms_script_sig(&signature(0x01))]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_p2ms, 1);
+        assert_eq!(stats.inputs_spending_multisig, 1);
+        assert_eq!(stats.inputs_spending_p2ms_multisig, 1);
+        assert_eq!(stats.inputs_spending_p2sh_multisig, 0);
+    }
+
+    #[test]
+    fn a_signature_that_is_not_strictly_der_encoded_is_counted() {
+        let block =
+            block_with_script_sigs(&[p2pk_script_sig(&not_strictly_der_encoded_signature())]);
+        let stats = script_stats(&block);
+        assert_eq!(stats.sigs_ecdsa, 1);
+        assert_eq!(stats.sigs_ecdsa_not_strict_der, 1);
+        assert_eq!(stats.sigs_ecdsa_strict_der, 0);
+    }
+
+    #[test]
+    fn signature_lengths_outside_the_usual_range_are_counted() {
+        let block = block_with_script_sigs(&[
+            p2pk_script_sig(&signature_of_length(69)),
+            p2pk_script_sig(&signature_of_length(74)),
+            p2pk_script_sig(&signature_of_length(75)),
+        ]);
+        let stats = script_stats(&block);
+        assert_eq!(stats.sigs_ecdsa, 3);
+        assert_eq!(stats.sigs_ecdsa_length_less_70byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_74byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_75byte_or_more, 1);
+        assert_eq!(stats.sigs_ecdsa_length_70byte, 0);
+    }
+
+    #[test]
+    fn signatures_are_counted_for_each_of_the_six_sighash_flags() {
+        let block = block_with_script_sigs(&[
+            p2pk_script_sig(&signature(0x01)),
+            p2pk_script_sig(&signature(0x02)),
+            p2pk_script_sig(&signature(0x03)),
+            p2pk_script_sig(&signature(0x81)),
+            p2pk_script_sig(&signature(0x82)),
+            p2pk_script_sig(&signature(0x83)),
+        ]);
+        let stats = script_stats(&block);
+        assert_eq!(stats.sigs_sighashes, 6);
+        assert_eq!(stats.sigs_sighash_all, 1);
+        assert_eq!(stats.sigs_sighash_none, 1);
+        assert_eq!(stats.sigs_sighash_single, 1);
+        assert_eq!(stats.sigs_sighash_all_acp, 1);
+        assert_eq!(stats.sigs_sighash_none_acp, 1);
+        assert_eq!(stats.sigs_sighash_single_acp, 1);
+    }
+
+    // ---------------------------------------------------------------------
     // Stats::from_block
     // ---------------------------------------------------------------------
 
