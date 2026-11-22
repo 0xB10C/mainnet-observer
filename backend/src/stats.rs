@@ -3353,6 +3353,74 @@ mod tests {
         assert_eq!(stats.outputs_coinbase_unknown, 1);
     }
 
+    /// An OmniLayer OP_RETURN: `OP_RETURN OP_PUSHBYTES_20 "omni" <16 byte>`.
+    fn omni_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x14];
+        v.extend(b"omni");
+        v.extend([0x44; 16]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A BIP 47 payment code notification OP_RETURN: `OP_RETURN OP_PUSHDATA1 80
+    /// <version> <features> <sign> <x value> <chain code> <13 zero byte>`.
+    fn bip47_script() -> ScriptBuf {
+        let mut payload = vec![0x01, 0x00, 0x02];
+        payload.extend([0x55; 32]);
+        payload.extend([0x66; 32]);
+        payload.extend([0x00; 13]);
+        let mut v = vec![0x6a, 0x4c, payload.len() as u8];
+        v.extend(payload);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A CoreDao OP_RETURN: `OP_RETURN OP_PUSHBYTES_45 "CORE" <version> <40 byte>`.
+    fn coredao_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x2d];
+        v.extend(b"CORE");
+        v.push(0x01);
+        v.extend([0x77; 40]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// An ExSat OP_RETURN: `OP_RETURN OP_PUSHBYTES_18 "EXSAT" <version> <12 byte>`.
+    fn exsat_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x12];
+        v.extend(b"EXSAT");
+        v.push(0x01);
+        v.extend([0x88; 12]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A Hathor Network OP_RETURN: `OP_RETURN OP_PUSHBYTES_36 "Hath" <32 byte>`.
+    fn hathor_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x24];
+        v.extend(b"Hath");
+        v.extend([0x99; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    #[test]
+    fn op_return_outputs_are_counted_by_their_flavor() {
+        let stats = output_stats(&block_with_outputs(0, &[omni_script(), bip47_script()]));
+        assert_eq!(stats.outputs_opreturn, 4);
+        assert_eq!(stats.outputs_opreturn_omnilayer, 2);
+        assert_eq!(stats.outputs_opreturn_bip47_payment_code, 2);
+    }
+
+    #[test]
+    fn the_merged_mining_markers_are_only_counted_in_the_coinbase() {
+        // the same outputs are in the coinbase and in the transaction after it
+        let stats = output_stats(&block_with_outputs(
+            0,
+            &[coredao_script(), exsat_script(), hathor_script()],
+        ));
+        assert_eq!(stats.outputs_opreturn, 6);
+        assert_eq!(stats.outputs_opreturn_coinbase_coredao, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_exsat, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_hathor, 1);
+    }
+
+    // ---------------------------------------------------------------------
     // FeerateStats
     // ---------------------------------------------------------------------
 
