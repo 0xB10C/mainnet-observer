@@ -3384,64 +3384,6 @@ mod tests {
         })
     }
 
-    /// `rest::ScriptPubkeyType` is not `Clone`, so copy it by hand.
-    fn copy_script_pubkey_type(type_: &ScriptPubkeyType) -> ScriptPubkeyType {
-        match type_ {
-            ScriptPubkeyType::Nonstandard => ScriptPubkeyType::Nonstandard,
-            ScriptPubkeyType::Pubkey => ScriptPubkeyType::Pubkey,
-            ScriptPubkeyType::PubkeyHash => ScriptPubkeyType::PubkeyHash,
-            ScriptPubkeyType::ScriptHash => ScriptPubkeyType::ScriptHash,
-            ScriptPubkeyType::MultiSig => ScriptPubkeyType::MultiSig,
-            ScriptPubkeyType::NullData => ScriptPubkeyType::NullData,
-            ScriptPubkeyType::Witness_v0_KeyHash => ScriptPubkeyType::Witness_v0_KeyHash,
-            ScriptPubkeyType::Witness_v0_ScriptHash => ScriptPubkeyType::Witness_v0_ScriptHash,
-            ScriptPubkeyType::Witness_v1_Taproot => ScriptPubkeyType::Witness_v1_Taproot,
-            ScriptPubkeyType::Witness_Unknown => ScriptPubkeyType::Witness_Unknown,
-            ScriptPubkeyType::Anchor => ScriptPubkeyType::Anchor,
-        }
-    }
-
-    fn copy_tx(tx: &RestTx) -> RestTx {
-        RestTx {
-            raw: tx.raw.clone(),
-            txid: tx.txid,
-            size: tx.size,
-            vsize: tx.vsize,
-            version: tx.version,
-            fee: tx.fee,
-            lock_time: tx.lock_time,
-            input: tx
-                .input
-                .iter()
-                .map(|input| Input {
-                    sequence: input.sequence,
-                    coinbase: input.coinbase.clone(),
-                    txid: input.txid,
-                    vout: input.vout,
-                    prevout: input.prevout.as_ref().map(|p| Prevout {
-                        height: p.height,
-                        value: p.value,
-                        script_pub_key: PrevoutScriptPubKey {
-                            type_: copy_script_pubkey_type(&p.script_pub_key.type_),
-                        },
-                    }),
-                })
-                .collect(),
-            output: tx
-                .output
-                .iter()
-                .map(|output| Output {
-                    value: output.value,
-                    n: output.n,
-                    script_pub_key: ScriptPubKey {
-                        script: output.script_pub_key.script.clone(),
-                        type_: copy_script_pubkey_type(&output.script_pub_key.type_),
-                    },
-                })
-                .collect(),
-        }
-    }
-
     /// A block with the header of the fixture `name` and the transactions of
     /// that fixture at `indices`. The coinbase transaction always comes first
     /// and only once, whether or not `indices` lists it. The header keeps the
@@ -3449,12 +3391,12 @@ mod tests {
     /// assert on those.
     fn block_from_txs(name: &str, indices: &[usize]) -> Block {
         let source = fixture(name);
-        let mut txdata = vec![copy_tx(&source.txdata[0])];
+        let mut txdata = vec![source.txdata[0].clone()];
         txdata.extend(
             indices
                 .iter()
                 .filter(|index| **index != 0)
-                .map(|index| copy_tx(&source.txdata[*index])),
+                .map(|index| source.txdata[*index].clone()),
         );
         Block {
             hash: source.hash,
