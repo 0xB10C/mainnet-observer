@@ -2713,21 +2713,26 @@ mod tests {
     /// the value of the parent's other output; with 10_000 sat the parent has
     /// exactly one dust output, which is what the rule asks for.
     fn ephemeral_dust_block(other_output_sat: u64) -> Block {
-        ephemeral_dust_block_spending(other_output_sat, 1)
+        // 1 sat into a P2WPKH output, which is dust below 294 sat
+        ephemeral_dust_block_with(1, other_output_sat, 1)
     }
 
     /// The same block, with the child spending the parent's output `vout`.
     /// The dust is in output 1, the other output is output 0, so a test can
     /// tell the two apart.
     fn ephemeral_dust_block_spending(other_output_sat: u64, vout: u32) -> Block {
+        ephemeral_dust_block_with(1, other_output_sat, vout)
+    }
+
+    /// The same block with `dust_sat` in the parent's output 1.
+    fn ephemeral_dust_block_with(dust_sat: u64, other_output_sat: u64, vout: u32) -> Block {
         let parent = spending_tx(
             3,
             0,
             &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
             &[
                 (other_output_sat, p2wpkh_script(2)),
-                // 1 sat into a P2WPKH output, which is dust below 294 sat
-                (1, p2wpkh_script(1)),
+                (dust_sat, p2wpkh_script(1)),
             ],
         );
         let child = spending_tx(
@@ -2750,6 +2755,21 @@ mod tests {
     fn a_child_spending_ephemeral_dust_is_counted() {
         assert_eq!(
             tx_stats(&ephemeral_dust_block(10_000)).tx_spending_ephemeral_dust,
+            1
+        );
+    }
+
+    #[test]
+    fn an_output_at_the_dust_threshold_is_not_ephemeral_dust() {
+        // 294 sat is the lowest value a P2WPKH output can hold without being
+        // dust, so this parent has no dust output at all
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block_with(294, 10_000, 1)).tx_spending_ephemeral_dust,
+            0
+        );
+        // one sat less and the child spending it counts
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block_with(293, 10_000, 1)).tx_spending_ephemeral_dust,
             1
         );
     }
