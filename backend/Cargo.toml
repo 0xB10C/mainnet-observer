@@ -29,3 +29,9 @@ serde_json = "1.0"
 [[bench]]
 name = "stats"
 harness = false
+
+[lints.clippy]
+# diesel's QueryableByName derive writes `Self { field: field }`, which the
+# clippy shipped with Rust 1.100 reports for every such struct. Nothing in our
+# own code does this, so the lint is switched off until diesel fixes the derive.
+redundant_field_names = "allow"
