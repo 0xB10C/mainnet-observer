@@ -8,8 +8,8 @@ edition = "2021"
 [dependencies]
 bitcoin = { version = "0.32", features = ["serde"] }
 serde = "1.0.188"
-diesel = { version = "= 2.1", features = ["sqlite", "64-column-tables"] }
-diesel_migrations = "2.1"
+diesel = { version = "= 2.4", features = ["sqlite", "64-column-tables"] }
+diesel_migrations = "2.4"
 chrono = "0.4.26"
 rawtx-rs = "0.2.0"
 rayon = "1.7.0"
