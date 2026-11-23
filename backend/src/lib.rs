@@ -10,7 +10,9 @@ use log::{debug, error, info, warn};
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use stats::Stats;
+use std::any::Any;
 use std::collections::BTreeSet;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -300,13 +302,19 @@ pub fn collect_statistics(
             let stat_sender_clone = stat_sender.clone();
             let insert_task_gone = Arc::clone(&insert_task_gone);
             rayon::spawn(move || {
-                let stats_result = Stats::from_block(block);
+                // A panic in the stats code would take the whole process down:
+                // rayon has no panic handler installed, so a panic on one of
+                // its workers aborts. Catch it and report it like any other
+                // stats error instead.
+                let stats_result =
+                    panic::catch_unwind(AssertUnwindSafe(|| Stats::from_block(block)))
+                        .unwrap_or_else(|payload| {
+                            Err(stats::StatsError::Panic(panic_message(payload)))
+                        });
                 if let Err(e) = &stats_result {
                     // We can't continue here and probably need to fix something
                     // in rawtx_rs.. The error is passed on to the batch-insert
-                    // task, which stops the run. Panicking here would take the
-                    // whole process down with it: rayon has no panic handler
-                    // installed, so a panic on one of its workers aborts.
+                    // task, which stops the run.
                     error!(
                         "Could not calculate stats for block at height {}: {}",
                         height, e
@@ -400,6 +408,17 @@ pub fn collect_statistics(
     get_blocks_result?;
     calc_stats_result?;
     batch_insert_result
+}
+
+/// The message of a caught panic, as far as its payload allows.
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 pub fn write_csv_files(

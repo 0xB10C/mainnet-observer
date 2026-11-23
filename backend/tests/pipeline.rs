@@ -367,6 +367,40 @@ fn stops_fetching_once_the_stats_of_a_block_failed() {
     );
 }
 
+/// A panic in the stats code has to end the run with an error. Without a
+/// safety net it aborts the whole process: rayon has no panic handler
+/// installed, so a panic on one of its workers is fatal.
+#[test]
+fn reports_a_block_whose_stats_panic_instead_of_aborting() {
+    common::init_logger();
+    let mock = MockCore::builder()
+        .blocks(tip_for_last_fetched_height(361582))
+        // A block without any transaction, not even a coinbase. Bitcoin Core
+        // never serves one, but the stats code expects a coinbase and panics.
+        .raw_block_at(361582, block_without_transactions("361582"))
+        .start();
+    let conn = common::memory_db();
+
+    let result = collect_statistics(mock.host(), mock.port(), Arc::clone(&conn), 1, Some(361582));
+
+    match result {
+        Err(MainError::Stats(e)) => assert!(
+            e.to_string().contains("coinbase"),
+            "the error should carry the panic message, got: {}",
+            e
+        ),
+        other => panic!("expected a stats error, got {:?}", other),
+    }
+}
+
+/// Takes a block fixture and removes all of its transactions.
+fn block_without_transactions(fixture: &str) -> String {
+    let mut block: serde_json::Value =
+        serde_json::from_str(&common::fixture(fixture)).expect("fixture json");
+    block["tx"] = serde_json::Value::Array(Vec::new());
+    serde_json::to_string(&block).expect("serialize block json")
+}
+
 /// Takes a block fixture and replaces the raw hex of its first transaction
 /// with something that isn't a transaction.
 fn block_with_undecodable_transaction(fixture: &str) -> String {
