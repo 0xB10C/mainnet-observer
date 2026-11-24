@@ -79,9 +79,10 @@ pub mod serde_hex {
     }
 }
 
+/// The script types Bitcoin Core knows, as it spells them in the `type` field
+/// of a `scriptPubKey`.
 #[allow(non_camel_case_types)]
-#[derive(Deserialize)]
-#[serde(rename_all = "lowercase")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ScriptPubkeyType {
     Nonstandard,
     Pubkey,
@@ -94,6 +95,56 @@ pub enum ScriptPubkeyType {
     Witness_v1_Taproot,
     Witness_Unknown,
     Anchor,
+    /// A type this version of the code doesn't know. Bitcoin Core keeps adding
+    /// them (`anchor` arrived in v28.0), and a new one shouldn't make a whole
+    /// block fail to parse.
+    ///
+    /// The trade-off: should Core ever rename a type we do know, its outputs
+    /// quietly end up here instead of failing the sync. The only code that
+    /// looks at the type is the anchor check in the stats, so the anchor
+    /// counters would drop to zero in that case.
+    Unknown,
+}
+
+impl ScriptPubkeyType {
+    /// Maps the `type` string of a `scriptPubKey` to a variant. Anything we
+    /// don't know becomes [`ScriptPubkeyType::Unknown`].
+    pub fn from_core_name(name: &str) -> ScriptPubkeyType {
+        match name {
+            "nonstandard" => ScriptPubkeyType::Nonstandard,
+            "pubkey" => ScriptPubkeyType::Pubkey,
+            "pubkeyhash" => ScriptPubkeyType::PubkeyHash,
+            "scripthash" => ScriptPubkeyType::ScriptHash,
+            "multisig" => ScriptPubkeyType::MultiSig,
+            "nulldata" => ScriptPubkeyType::NullData,
+            "witness_v0_keyhash" => ScriptPubkeyType::Witness_v0_KeyHash,
+            "witness_v0_scripthash" => ScriptPubkeyType::Witness_v0_ScriptHash,
+            "witness_v1_taproot" => ScriptPubkeyType::Witness_v1_Taproot,
+            "witness_unknown" => ScriptPubkeyType::Witness_Unknown,
+            "anchor" => ScriptPubkeyType::Anchor,
+            _ => ScriptPubkeyType::Unknown,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for ScriptPubkeyType {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        struct ScriptPubkeyTypeVisitor;
+
+        impl serde::de::Visitor<'_> for ScriptPubkeyTypeVisitor {
+            type Value = ScriptPubkeyType;
+
+            fn expecting(&self, f: &mut fmt::Formatter) -> fmt::Result {
+                f.write_str("a scriptPubKey type")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<ScriptPubkeyType, E> {
+                Ok(ScriptPubkeyType::from_core_name(v))
+            }
+        }
+
+        d.deserialize_str(ScriptPubkeyTypeVisitor)
+    }
 }
 
 #[derive(Deserialize)]
