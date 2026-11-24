@@ -147,7 +147,7 @@ impl<'de> Deserialize<'de> for ScriptPubkeyType {
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct ScriptPubKey {
     #[serde(rename = "hex")]
     pub script: ScriptBuf,
@@ -157,13 +157,13 @@ pub struct ScriptPubKey {
 
 /// The script_pub_key of a prevout. Unlike an output's script_pub_key, we only
 /// need the type here, so the script itself isn't hex-decoded.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct PrevoutScriptPubKey {
     #[serde(rename = "type")]
     pub type_: ScriptPubkeyType,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Prevout {
     pub height: i64,
@@ -179,7 +179,7 @@ pub struct Prevout {
 /// behind `#[serde(flatten)]`: flattening and untagged enums force serde to
 /// buffer every field of every input into an intermediate representation before
 /// it can pick a variant, which costs more than the fields themselves.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Input {
     pub sequence: Sequence,
     #[serde(default, with = "serde_hex::opt")]
@@ -192,7 +192,7 @@ pub struct Input {
     pub prevout: Option<Prevout>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct Output {
     #[serde(with = "bitcoin::amount::serde::as_btc")]
@@ -208,7 +208,7 @@ pub struct Output {
 /// far cheaper than parsing it out of the JSON a second time. The notable
 /// exceptions are `fee` and the `prevout`s, which the raw transaction doesn't
 /// carry.
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct Transaction {
     #[serde(rename = "hex", with = "serde_hex")]
     pub raw: Vec<u8>,
