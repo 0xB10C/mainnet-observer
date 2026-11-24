@@ -10,7 +10,9 @@ use log::{debug, error, info, warn};
 use rayon::iter::IntoParallelRefIterator;
 use rayon::iter::ParallelIterator;
 use stats::Stats;
+use std::any::Any;
 use std::collections::BTreeSet;
+use std::panic::{self, AssertUnwindSafe};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex};
@@ -170,8 +172,9 @@ pub fn collect_statistics(
     // To determine which blocks to fetch and write to (or override in) the database:
     // 1. Get the height the node considers to be the tip
     let rest_height = chain_info.blocks;
-    // 2. Substract an reorg margin.
-    let fetch_height = std::cmp::max(0, rest_height - REORG_SAFETY_MARGIN);
+    // 2. Substract an reorg margin. A node that doesn't have more blocks than
+    //    the margin leaves us with nothing to fetch.
+    let fetch_height = rest_height.saturating_sub(REORG_SAFETY_MARGIN);
     // 3. Get a list of block heights where our block_stats stats_version is up-to-date
     //    (i.e. stats are already at the newest version)
     let uptodate_heights: BTreeSet<i64> = {
@@ -183,6 +186,11 @@ pub fn collect_statistics(
     };
     // 4. Filter out heights that are already up-to-date from all possible heights
     //    we could fetch. If start_height is set, skip blocks below it.
+    //    The range end is exclusive, so the last block we fetch is
+    //    `rest_height - REORG_SAFETY_MARGIN - 1`: the tip and the
+    //    REORG_SAFETY_MARGIN blocks below it are left alone, which is one
+    //    block more than the margin itself. See the test
+    //    `leaves_the_reorg_margin_and_one_more_block_alone`.
     let start = start_height.unwrap_or(0) as i64;
     let heights_to_fetch: Vec<i64> = (start..fetch_height as i64)
         .filter(|h| !uptodate_heights.contains(h))
@@ -281,29 +289,45 @@ pub fn collect_statistics(
     // calculates the per block stats and sends them onwards to the batch-insert
     // task
     let calc_stats_task = thread::spawn(move || -> Result<(), MainError> {
+        // Set once the batch-insert task is gone, which means the run already
+        // failed. Dropping the block receiver then also stops the get-blocks
+        // task, instead of letting it fetch the rest of the chain for nothing.
+        let insert_task_gone = Arc::new(AtomicBool::new(false));
         while let Ok((height, block)) = block_receiver.recv() {
+            if insert_task_gone.load(Ordering::Relaxed) {
+                warn!("calc-stats: the batch-insert task is gone, stopping");
+                break;
+            }
             debug!("calc-stats: processing block at height {}..", height);
             let stat_sender_clone = stat_sender.clone();
+            let insert_task_gone = Arc::clone(&insert_task_gone);
             rayon::spawn(move || {
-                let stats_result = Stats::from_block(block);
-                if let Err(e) = stats_result {
+                // A panic in the stats code would take the whole process down:
+                // rayon has no panic handler installed, so a panic on one of
+                // its workers aborts. Catch it and report it like any other
+                // stats error instead.
+                let stats_result =
+                    panic::catch_unwind(AssertUnwindSafe(|| Stats::from_block(block)))
+                        .unwrap_or_else(|payload| {
+                            Err(stats::StatsError::Panic(panic_message(payload)))
+                        });
+                if let Err(e) = &stats_result {
+                    // We can't continue here and probably need to fix something
+                    // in rawtx_rs.. The error is passed on to the batch-insert
+                    // task, which stops the run.
                     error!(
                         "Could not calculate stats for block at height {}: {}",
                         height, e
                     );
-                    // We can't continue here and probably need to fix something
-                    // in rawtx_rs..
-                    panic!(
-                        "Could not process block {}: {}",
-                        height,
-                        MainError::Stats(e)
-                    );
                 };
-                if let Err(e) = stat_sender_clone.send(stats_result) {
-                    // We can't continue here..
-                    panic!(
-                        "during sending stats at height {} to db writer: stats receiver dropped: {}",
-                        height, e
+                if stat_sender_clone.send(stats_result).is_err() {
+                    // The batch-insert task is gone, so there is nobody left to
+                    // hand these stats to. It (or another block) already failed
+                    // the run.
+                    insert_task_gone.store(true, Ordering::Relaxed);
+                    warn!(
+                        "during sending stats at height {} to db writer: stats receiver dropped",
+                        height
                     );
                 } else {
                     debug!("calc-stats: processed block at height {}", height);
@@ -384,6 +408,17 @@ pub fn collect_statistics(
     get_blocks_result?;
     calc_stats_result?;
     batch_insert_result
+}
+
+/// The message of a caught panic, as far as its payload allows.
+fn panic_message(payload: Box<dyn Any + Send>) -> String {
+    if let Some(message) = payload.downcast_ref::<&str>() {
+        message.to_string()
+    } else if let Some(message) = payload.downcast_ref::<String>() {
+        message.clone()
+    } else {
+        "unknown panic payload".to_string()
+    }
 }
 
 pub fn write_csv_files(
