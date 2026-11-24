@@ -4,6 +4,7 @@ use crate::stats::{
     BlockStats, FeerateStats, InputStats, OutputStats, ScriptStats, Stats, TxStats,
 };
 use crate::MainError;
+use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{BigInt, Float, Integer, Nullable, Text};
@@ -56,14 +57,15 @@ pub fn open_db_and_run_migrations(database_path: &str) -> Result<SqliteConnectio
 
 pub fn performance_tune(conn: &mut SqliteConnection) -> Result<(), diesel::result::Error> {
     debug!("performance tuning the database for batch inserts..");
-    sql_query(
+    // batch_execute(), because a prepared statement only ever runs the first
+    // statement of the query and silently drops the rest.
+    conn.batch_execute(
         r#"
         pragma journal_mode = WAL;
         pragma synchronous = normal;
         pragma temp_store = memory;
     "#,
-    )
-    .execute(conn)?;
+    )?;
     Ok(())
 }
 
@@ -99,34 +101,41 @@ pub fn list_column_names(
     sql_query(format!("PRAGMA table_info({})", table)).get_results(conn)
 }
 
+/// Returns the average and the sum of a column for each date.
+///
+/// The frontend joins the resulting CSV file with date.csv by row position, so
+/// the rows must be in the same order as the ones of [`date_column()`].
 pub fn column_sum_and_avg_by_date(
     conn: &mut SqliteConnection,
     colname: &str,
     table: &str,
-) -> Vec<AvgAndSum> {
+) -> Result<Vec<AvgAndSum>, diesel::result::Error> {
     sql_query(format!(
-        "SELECT avg({}) as avg, sum({}) as sum FROM {} GROUP BY date",
+        "SELECT avg({}) as avg, sum({}) as sum FROM {} GROUP BY date ORDER BY date",
         colname, colname, table
     ))
     .get_results(conn)
-    .unwrap()
 }
 
-pub fn coinbase_subsidy_and_fees_avg_by_date(conn: &mut SqliteConnection) -> Vec<SubsidyAndFees> {
+/// Returns the average coinbase subsidy and the average coinbase fees for each
+/// date, in the same order as [`date_column()`].
+pub fn coinbase_subsidy_and_fees_avg_by_date(
+    conn: &mut SqliteConnection,
+) -> Result<Vec<SubsidyAndFees>, diesel::result::Error> {
     sql_query(
         "SELECT \
          avg(5000000000 >> (height / 210000)) as subsidy_avg, \
          avg(coinbase_output_amount - (5000000000 >> (height / 210000))) as fees_avg \
-         FROM block_stats GROUP BY date",
+         FROM block_stats GROUP BY date ORDER BY date",
     )
     .get_results(conn)
-    .unwrap()
 }
 
-pub fn date_column(conn: &mut SqliteConnection) -> Vec<DateColumn> {
-    sql_query("SELECT date as date FROM block_stats GROUP BY date".to_string())
+/// Returns every date that has at least one block, sorted ascending. This is
+/// the date column the metric CSV files are joined with by row position.
+pub fn date_column(conn: &mut SqliteConnection) -> Result<Vec<DateColumn>, diesel::result::Error> {
+    sql_query("SELECT date as date FROM block_stats GROUP BY date ORDER BY date".to_string())
         .get_results(conn)
-        .unwrap()
 }
 
 #[derive(Debug, QueryableByName)]
@@ -222,7 +231,8 @@ pub fn blocks_per_day_top5_pool_groups(
             WHERE pool_id IN ({})
             GROUP BY t."date", subquery.total_count
             ORDER BY t."date" DESC
-            LIMIT (356 * 6)
+            -- keep the most recent 2190 days (about six years) that have a top-5 block
+            LIMIT (365 * 6)
         ) X
         ORDER BY "date" ASC;
         "#,
@@ -359,6 +369,10 @@ pub struct PoolsMiningEphemeralDust {
     pub first_ephemeral_dust_date: String,
 }
 
+/// Returns, per pool, the number of blocks that contain at least one
+/// transaction spending ephemeral dust, together with the first such block.
+/// The count is a number of blocks, not a number of transactions, so that it
+/// matches the first block columns next to it.
 pub fn get_pools_mining_ephemeral_dust(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<PoolsMiningEphemeralDust>, diesel::result::Error> {
@@ -366,7 +380,7 @@ pub fn get_pools_mining_ephemeral_dust(
     r#"
         SELECT
             t.pool_id,
-            COUNT(t.tx_spending_ephemeral_dust) as count,
+            COUNT(*) as count,
             MIN(CASE WHEN t.tx_spending_ephemeral_dust > 0 THEN t.height END) AS first_ephemeral_dust_height,
             MIN(CASE WHEN t.tx_spending_ephemeral_dust > 0 THEN t.date END) AS first_ephemeral_dust_date
         FROM (
@@ -393,9 +407,9 @@ pub struct PoolsMiningBIP54Coinbase {
     #[diesel(sql_type = BigInt)]
     pub count: i64,
     #[diesel(sql_type = BigInt)]
-    pub first_bip54_coibnase_height: i64,
+    pub first_bip54_coinbase_height: i64,
     #[diesel(sql_type = Text)]
-    pub first_bip54_coibnase_date: String,
+    pub first_bip54_coinbase_date: String,
 }
 
 pub fn get_pools_mining_bip54_coinbase(
@@ -405,9 +419,9 @@ pub fn get_pools_mining_bip54_coinbase(
     r#"
         SELECT
             t.pool_id,
-            COUNT(t.coinbase_locktime_set_bip54) as count,
-            MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.height END) AS first_bip54_coibnase_height,
-            MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.date END) AS first_bip54_coibnase_date
+            COUNT(*) as count,
+            MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.height END) AS first_bip54_coinbase_height,
+            MIN(CASE WHEN t.coinbase_locktime_set_bip54 > 0 THEN t.date END) AS first_bip54_coinbase_date
         FROM (
             SELECT
                 bs.date,
@@ -418,7 +432,7 @@ pub fn get_pools_mining_bip54_coinbase(
             WHERE bs.coinbase_locktime_set_bip54 > 0
         ) t
         GROUP BY t.pool_id
-        ORDER BY first_bip54_coibnase_date;
+        ORDER BY first_bip54_coinbase_date;
     "#,
     )
     .get_results(conn)
@@ -580,7 +594,9 @@ pub fn get_blocks_per_day_per_pool(
         WHERE
             b."pool_id" = {}
         GROUP BY
-            b.date, t.total;
+            b.date, t.total
+        ORDER BY
+            b.date;
         "#,
         id
     ))
@@ -704,4 +720,155 @@ fn insert_feerate_stats(
         .values(stats)
         .execute(conn)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::rest::Block;
+    use serde::Deserialize;
+    use std::fs::File;
+    use std::io::BufReader;
+
+    fn fixture_stats() -> Stats {
+        let buffer = BufReader::new(File::open("./testdata/361582.json").unwrap());
+        let mut de = serde_json::Deserializer::from_reader(buffer);
+        let block = Block::deserialize(&mut de).expect("test block json to be valid");
+        Stats::from_block(block).expect("test block should produce stats")
+    }
+
+    #[test]
+    fn migrations_can_be_reverted_and_run_again() {
+        let mut conn = SqliteConnection::establish(":memory:").unwrap();
+        conn.run_pending_migrations(MIGRATIONS).unwrap();
+        assert!(!conn.has_pending_migration(MIGRATIONS).unwrap());
+
+        // Runs every down.sql.
+        conn.revert_all_migrations(MIGRATIONS).unwrap();
+        assert!(conn.has_pending_migration(MIGRATIONS).unwrap());
+
+        conn.run_pending_migrations(MIGRATIONS).unwrap();
+        assert!(!conn.has_pending_migration(MIGRATIONS).unwrap());
+        assert_eq!(get_db_block_height(&mut conn).unwrap(), None);
+    }
+
+    #[test]
+    fn a_stats_row_round_trips_through_all_six_tables() {
+        // Catches drift between the migrations, schema.rs and the stats
+        // structs: every column has to exist with a matching type.
+        let mut conn = open_db_and_run_migrations(":memory:").unwrap();
+        let stats = fixture_stats();
+        insert_stats(&mut conn, std::slice::from_ref(&stats)).unwrap();
+
+        let block: BlockStats = schema::block_stats::table
+            .select(BlockStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(block, stats.block);
+
+        let tx: TxStats = schema::tx_stats::table
+            .select(TxStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(tx, stats.tx);
+
+        let input: InputStats = schema::input_stats::table
+            .select(InputStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(input, stats.input);
+
+        let output: OutputStats = schema::output_stats::table
+            .select(OutputStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(output, stats.output);
+
+        let script: ScriptStats = schema::script_stats::table
+            .select(ScriptStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(script, stats.script);
+
+        let feerate: FeerateStats = schema::feerate_stats::table
+            .select(FeerateStats::as_select())
+            .first(&mut conn)
+            .unwrap();
+        assert_eq!(feerate, stats.feerate);
+    }
+
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(QueryableByName)]
+    struct JournalMode {
+        #[diesel(sql_type = Text)]
+        journal_mode: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct Synchronous {
+        #[diesel(sql_type = Integer)]
+        synchronous: i32,
+    }
+
+    #[derive(QueryableByName)]
+    struct TempStore {
+        #[diesel(sql_type = Integer)]
+        temp_store: i32,
+    }
+
+    fn journal_mode(conn: &mut SqliteConnection) -> String {
+        sql_query("PRAGMA journal_mode")
+            .get_result::<JournalMode>(conn)
+            .unwrap()
+            .journal_mode
+    }
+
+    fn synchronous(conn: &mut SqliteConnection) -> i32 {
+        sql_query("PRAGMA synchronous")
+            .get_result::<Synchronous>(conn)
+            .unwrap()
+            .synchronous
+    }
+
+    fn temp_store(conn: &mut SqliteConnection) -> i32 {
+        sql_query("PRAGMA temp_store")
+            .get_result::<TempStore>(conn)
+            .unwrap()
+            .temp_store
+    }
+
+    #[test]
+    fn performance_tune_sets_the_three_pragmas() {
+        // A database that lives in a file, because an in-memory database can
+        // never be in WAL mode.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mainnet-observer-pragmas-{}-{}.sqlite",
+            std::process::id(),
+            nanos
+        ));
+        let path = path.to_string_lossy().to_string();
+        let mut conn = open_db_and_run_migrations(&path).expect("the database should open");
+
+        // What a fresh database comes with.
+        assert_eq!(journal_mode(&mut conn), "delete");
+        assert_eq!(synchronous(&mut conn), 2, "synchronous = full");
+        assert_eq!(temp_store(&mut conn), 0, "temp_store = default");
+
+        performance_tune(&mut conn).unwrap();
+
+        assert_eq!(journal_mode(&mut conn), "wal");
+        assert_eq!(synchronous(&mut conn), 1, "synchronous = normal");
+        assert_eq!(temp_store(&mut conn), 2, "temp_store = memory");
+
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{}{}", path, suffix));
+        }
+    }
 }
