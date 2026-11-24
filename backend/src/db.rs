@@ -4,6 +4,7 @@ use crate::stats::{
     BlockStats, FeerateStats, InputStats, OutputStats, ScriptStats, Stats, TxStats,
 };
 use crate::MainError;
+use diesel::connection::SimpleConnection;
 use diesel::prelude::*;
 use diesel::sql_query;
 use diesel::sql_types::{BigInt, Float, Integer, Nullable, Text};
@@ -56,14 +57,15 @@ pub fn open_db_and_run_migrations(database_path: &str) -> Result<SqliteConnectio
 
 pub fn performance_tune(conn: &mut SqliteConnection) -> Result<(), diesel::result::Error> {
     debug!("performance tuning the database for batch inserts..");
-    sql_query(
+    // batch_execute(), because a prepared statement only ever runs the first
+    // statement of the query and silently drops the rest.
+    conn.batch_execute(
         r#"
         pragma journal_mode = WAL;
         pragma synchronous = normal;
         pragma temp_store = memory;
     "#,
-    )
-    .execute(conn)?;
+    )?;
     Ok(())
 }
 
@@ -704,4 +706,83 @@ fn insert_feerate_stats(
         .values(stats)
         .execute(conn)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(QueryableByName)]
+    struct JournalMode {
+        #[diesel(sql_type = Text)]
+        journal_mode: String,
+    }
+
+    #[derive(QueryableByName)]
+    struct Synchronous {
+        #[diesel(sql_type = Integer)]
+        synchronous: i32,
+    }
+
+    #[derive(QueryableByName)]
+    struct TempStore {
+        #[diesel(sql_type = Integer)]
+        temp_store: i32,
+    }
+
+    fn journal_mode(conn: &mut SqliteConnection) -> String {
+        sql_query("PRAGMA journal_mode")
+            .get_result::<JournalMode>(conn)
+            .unwrap()
+            .journal_mode
+    }
+
+    fn synchronous(conn: &mut SqliteConnection) -> i32 {
+        sql_query("PRAGMA synchronous")
+            .get_result::<Synchronous>(conn)
+            .unwrap()
+            .synchronous
+    }
+
+    fn temp_store(conn: &mut SqliteConnection) -> i32 {
+        sql_query("PRAGMA temp_store")
+            .get_result::<TempStore>(conn)
+            .unwrap()
+            .temp_store
+    }
+
+    #[test]
+    fn performance_tune_sets_the_three_pragmas() {
+        // A database that lives in a file, because an in-memory database can
+        // never be in WAL mode.
+        let nanos = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path = std::env::temp_dir().join(format!(
+            "mainnet-observer-pragmas-{}-{}.sqlite",
+            std::process::id(),
+            nanos
+        ));
+        let path = path.to_string_lossy().to_string();
+        let mut conn = open_db_and_run_migrations(&path).expect("the database should open");
+
+        // What a fresh database comes with.
+        assert_eq!(journal_mode(&mut conn), "delete");
+        assert_eq!(synchronous(&mut conn), 2, "synchronous = full");
+        assert_eq!(temp_store(&mut conn), 0, "temp_store = default");
+
+        performance_tune(&mut conn).unwrap();
+
+        assert_eq!(journal_mode(&mut conn), "wal");
+        assert_eq!(synchronous(&mut conn), 1, "synchronous = normal");
+        assert_eq!(temp_store(&mut conn), 2, "temp_store = memory");
+
+        drop(conn);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = fs::remove_file(format!("{}{}", path, suffix));
+        }
+    }
 }
