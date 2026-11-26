@@ -32,7 +32,8 @@ const P2A_DUST_THRESHOLD: u64 = 240;
 // version 6: add inscription stats
 // version 7: add block hash
 // version 8: add sigops
-pub const STATS_VERSION: i32 = 8;
+// version 9: fix the too-high locktime and the anchor spend input counters
+pub const STATS_VERSION: i32 = 9;
 
 #[derive(Debug)]
 pub enum StatsError {
@@ -465,8 +466,11 @@ impl TxStats {
                     .take(&(txid, *vout))
                     .is_some()
                     && tx.version == 3
-                    // unwrap safety: we filter for non-coinbase inputs above, hence this transaction is non-coinbase
-                    && tx.fee.unwrap() != Amount::ZERO
+                    // We filter for non-coinbase inputs above, so Bitcoin Core
+                    // reports a fee for this transaction. If it ever doesn't,
+                    // we can't tell whether the child paid for the dust, so we
+                    // don't count it.
+                    && tx.fee.is_some_and(|fee| fee != Amount::ZERO)
                     && tx.vsize <= 1_000;
 
                 if (tx_spending_ephemeral_dust || ephemeral_dust_outpoints_in_this_block.is_empty())
@@ -512,7 +516,14 @@ impl TxStats {
                 s.tx_timelock_not_enforced += 1;
             }
 
-            if tx.lock_time.is_block_height() && tx.lock_time.to_consensus_u32() > height as u32 {
+            // A transaction is only final in a block if its height locktime is
+            // *below* the height of that block, so a locktime equal to the
+            // block height is already too high to be satisfied here. A locktime
+            // of zero is no locktime at all, which matters in the genesis block.
+            if tx.lock_time.is_block_height()
+                && tx.lock_time.to_consensus_u32() > 0
+                && tx.lock_time.to_consensus_u32() >= height as u32
+            {
                 s.tx_timelock_too_high += 1;
             }
         }
@@ -603,14 +614,16 @@ impl ScriptStats {
                             s.sigs_ecdsa_not_strict_der += 1;
                         }
                         match sig.length {
-                            8..=69 => s.sigs_ecdsa_length_less_70byte += 1,
+                            // rawtx-rs never hands us a signature shorter than
+                            // nine bytes, but a strange signature is still a
+                            // short one and must not take the stats down.
+                            ..=69 => s.sigs_ecdsa_length_less_70byte += 1,
                             70 => s.sigs_ecdsa_length_70byte += 1,
                             71 => s.sigs_ecdsa_length_71byte += 1,
                             72 => s.sigs_ecdsa_length_72byte += 1,
                             73 => s.sigs_ecdsa_length_73byte += 1,
                             74 => s.sigs_ecdsa_length_74byte += 1,
                             75.. => s.sigs_ecdsa_length_75byte_or_more += 1,
-                            _ => panic!("ECDSA signature with {} bytes..?", sig.length),
                         }
 
                         let is_r_low = sig.low_r();
@@ -775,12 +788,15 @@ impl InputStats {
                     InputType::Unknown | InputType::P2a => s.inputs_unknown += 1,
                 }
             }
-            for input in tx.input.iter() {
+            for (input, input_info) in tx.input.iter().zip(tx_info.input_infos.iter()) {
                 let (Some(txid), Some(prevout)) = (&input.txid, &input.prevout) else {
                     // coinbase input
                     continue;
                 };
-                // prevout.height=0 for same-block UTXOs, so use the txid check to detect age=0.
+                // Bitcoin Core reports the block's own height for an output
+                // created in this very block, which gives an age of zero below.
+                // The txid check is kept as a safety net in case a node ever
+                // reports a height of zero instead.
                 let is_same_block = txids_in_this_block.contains(txid);
                 if is_same_block {
                     s.inputs_spend_in_same_block += 1;
@@ -788,7 +804,15 @@ impl InputStats {
 
                 if matches!(prevout.script_pub_key.type_, ScriptPubkeyType::Anchor) {
                     s.inputs_p2a += 1;
-                    s.inputs_unknown -= 1;
+                    // An anchor spend is empty and can't be told apart from an
+                    // unknown input by looking at the input alone, so it was
+                    // counted as unknown above. Take it back out of there - but
+                    // only if it really ended up there: a spend carrying a
+                    // witness (non-standard, but valid) is recognized by its
+                    // witness and counted elsewhere.
+                    if matches!(input_info.in_type, InputType::Unknown | InputType::P2a) {
+                        s.inputs_unknown -= 1;
+                    }
 
                     if prevout.value < bitcoin::Amount::from_sat(P2A_DUST_THRESHOLD) {
                         s.inputs_p2a_dust += 1;
@@ -1113,7 +1137,9 @@ fn f64_nan_as_0(a: f64) -> f64 {
 
 impl FeerateStats {
     pub fn from_block(block: &Block, date: String, tx_infos: &[TxInfo]) -> FeerateStats {
-        let num_tx_without_coinbase = block.txdata.len() - 1;
+        // every block has a coinbase transaction, but don't underflow if one
+        // somehow arrives without it
+        let num_tx_without_coinbase = block.txdata.len().saturating_sub(1);
 
         let mut fees_sat = Vec::with_capacity(num_tx_without_coinbase);
         let mut sizes: Vec<u64> = Vec::with_capacity(num_tx_without_coinbase);
@@ -1157,10 +1183,12 @@ impl FeerateStats {
                 _ => feerate_1000_plus_sat_vbyte += 1, // 1000 or more
             }
 
-            if let Some(fee) = tx.fee {
-                if fee.to_sat() == 0 {
-                    zero_fee_tx += 1;
-                }
+            // A transaction without a fee is treated as paying zero here, the
+            // same way it is in the fee sum, the percentiles and the bands
+            // above. Bitcoin Core reports a fee for every non-coinbase
+            // transaction, so this only matters for malformed input.
+            if fee == Amount::ZERO {
+                zero_fee_tx += 1;
             }
 
             fees_sat.push(fee.to_sat());
@@ -1691,7 +1719,9 @@ mod tests {
                 tx_timelock_height: 209,
                 tx_timelock_timestamp: 0,
                 tx_timelock_not_enforced: 22,
-                tx_timelock_too_high: 0,
+                // three transactions have a locktime of 739990, which can only
+                // be satisfied in a later block
+                tx_timelock_too_high: 3,
             },
             input: InputStats {
                 height: 739990,
@@ -2144,5 +2174,1749 @@ mod tests {
 
         diff_stats(&stats, &expected_stats);
         assert_eq!(stats, expected_stats, "see diff above");
+    }
+
+    // ---------------------------------------------------------------------
+    // Helpers for building blocks from scratch.
+    //
+    // The stats mix fields that Bitcoin Core reports in the block JSON (`fee`,
+    // `vsize`, the prevouts, ...) with fields read from the raw transaction, so
+    // a test block is always built from a real `bitcoin::Transaction` that is
+    // then wrapped into the `rest::Transaction` Core would hand us for it.
+    // ---------------------------------------------------------------------
+
+    use bitcoin::hashes::Hash;
+    use bitcoin::{
+        absolute::LockTime, block, transaction, Amount, BlockHash, OutPoint, ScriptBuf, Sequence,
+        Txid, Weight, Witness,
+    };
+    use bitcoin_pool_identification::Pool;
+    use rawtx_rs::tx::TxInfo;
+
+    use crate::rest::{
+        Input, Output, Prevout, PrevoutScriptPubKey, ScriptPubKey, ScriptPubkeyType,
+        Transaction as RestTx,
+    };
+
+    type BtcTx = bitcoin::Transaction;
+
+    /// The decoded transactions and their `TxInfo`s, the way `Stats::from_block`
+    /// prepares them for the individual `from_block` functions.
+    fn decode(block: &Block) -> (Vec<TxInfo>, Vec<BtcTx>) {
+        let txns: Vec<BtcTx> = block
+            .txdata
+            .iter()
+            .map(|tx| bitcoin::consensus::deserialize(&tx.raw).expect("raw tx to decode"))
+            .collect();
+        let tx_infos = txns.iter().map(|tx| TxInfo::new(tx).unwrap()).collect();
+        (tx_infos, txns)
+    }
+
+    fn block_stats(block: &Block) -> BlockStats {
+        block_stats_with(block, 0, &[])
+    }
+
+    fn block_stats_with(block: &Block, sigops: usize, pools: &[Pool]) -> BlockStats {
+        let (tx_infos, _) = decode(block);
+        BlockStats::from_block(block, "date".to_string(), &tx_infos, sigops, pools)
+            .expect("block stats to be computed")
+    }
+
+    /// A P2WPKH output script. Its dust threshold is 294 sat.
+    fn p2wpkh_script(byte: u8) -> ScriptBuf {
+        let mut v = vec![0x00, 0x14];
+        v.extend([byte; 20]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A coinbase transaction paying to `outputs`.
+    fn coinbase_tx(outputs: &[(u64, ScriptBuf)], lock_time: u32, sequence: Sequence) -> BtcTx {
+        BtcTx {
+            version: transaction::Version::ONE,
+            lock_time: LockTime::from_consensus(lock_time),
+            input: vec![bitcoin::TxIn {
+                previous_output: OutPoint::null(),
+                script_sig: ScriptBuf::from_bytes(vec![0x51, 0x51]),
+                sequence,
+                witness: Witness::new(),
+            }],
+            output: outputs
+                .iter()
+                .map(|(value, script)| bitcoin::TxOut {
+                    value: Amount::from_sat(*value),
+                    script_pubkey: script.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    /// A coinbase transaction claiming `value_sat` in a single output.
+    fn simple_coinbase(value_sat: u64) -> RestTx {
+        rest_tx(
+            &coinbase_tx(&[(value_sat, p2wpkh_script(0x00))], 0, Sequence::MAX),
+            None,
+            vec![None],
+        )
+    }
+
+    /// A transaction spending `inputs` and creating `outputs`. The inputs have
+    /// an empty script_sig and no witness.
+    fn spending_tx(
+        version: i32,
+        lock_time: u32,
+        inputs: &[(OutPoint, Sequence)],
+        outputs: &[(u64, ScriptBuf)],
+    ) -> BtcTx {
+        BtcTx {
+            version: transaction::Version(version),
+            lock_time: LockTime::from_consensus(lock_time),
+            input: inputs
+                .iter()
+                .map(|(outpoint, sequence)| bitcoin::TxIn {
+                    previous_output: *outpoint,
+                    script_sig: ScriptBuf::new(),
+                    sequence: *sequence,
+                    witness: Witness::new(),
+                })
+                .collect(),
+            output: outputs
+                .iter()
+                .map(|(value, script)| bitcoin::TxOut {
+                    value: Amount::from_sat(*value),
+                    script_pubkey: script.clone(),
+                })
+                .collect(),
+        }
+    }
+
+    fn prevout(height: i64, value_sat: u64, type_: ScriptPubkeyType) -> Prevout {
+        Prevout {
+            height,
+            value: Amount::from_sat(value_sat),
+            script_pub_key: PrevoutScriptPubKey { type_ },
+        }
+    }
+
+    /// Wraps a `bitcoin::Transaction` into the `rest::Transaction` that Bitcoin
+    /// Core would hand us for it. `prevouts` holds one entry per input; a
+    /// coinbase input gets `None`.
+    fn rest_tx(tx: &BtcTx, fee: Option<Amount>, prevouts: Vec<Option<Prevout>>) -> RestTx {
+        assert_eq!(prevouts.len(), tx.input.len());
+        RestTx {
+            raw: bitcoin::consensus::serialize(tx),
+            txid: tx.compute_txid(),
+            size: tx.total_size() as u32,
+            vsize: tx.vsize() as u32,
+            version: tx.version.0 as u32,
+            fee,
+            lock_time: tx.lock_time,
+            input: tx
+                .input
+                .iter()
+                .zip(prevouts)
+                .map(|(input, prevout)| {
+                    let is_coinbase = input.previous_output.is_null();
+                    Input {
+                        sequence: input.sequence,
+                        coinbase: is_coinbase.then(|| input.script_sig.to_bytes()),
+                        txid: (!is_coinbase).then_some(input.previous_output.txid),
+                        vout: (!is_coinbase).then_some(input.previous_output.vout),
+                        prevout,
+                    }
+                })
+                .collect(),
+            output: tx
+                .output
+                .iter()
+                .enumerate()
+                .map(|(n, output)| Output {
+                    value: output.value,
+                    n: n as u32,
+                    script_pub_key: ScriptPubKey {
+                        script: output.script_pubkey.clone(),
+                        type_: ScriptPubkeyType::Nonstandard,
+                    },
+                })
+                .collect(),
+        }
+    }
+
+    /// A block with a made up header (the one of block 361582) and the given
+    /// transactions.
+    ///
+    /// Its `size`, `stripped_size` and `weight` are rough sums over the
+    /// transactions, not what Bitcoin Core would report, so don't assert on
+    /// them.
+    fn synthetic_block(height: i64, txdata: Vec<RestTx>) -> Block {
+        Block {
+            hash: BlockHash::all_zeros(),
+            size: txdata.iter().map(|tx| tx.size as i64).sum(),
+            stripped_size: txdata.iter().map(|tx| tx.size as i64).sum(),
+            weight: Weight::from_vb(txdata.iter().map(|tx| tx.vsize as u64).sum()).unwrap(),
+            height,
+            version: block::Version::from_consensus(2),
+            txdata,
+            time: 1434694400,
+            nonce: 0,
+            bits: "18162043".to_string(),
+        }
+    }
+
+    /// A txid that is not used by anything else in a test block.
+    fn fake_txid(byte: u8) -> Txid {
+        Txid::from_byte_array([byte; 32])
+    }
+
+    // ---------------------------------------------------------------------
+    // BlockStats
+    // ---------------------------------------------------------------------
+
+    /// A block at `height` whose coinbase claims `claimed_sat` and that
+    /// contains one transaction paying `fee_sat`.
+    fn block_claiming(height: i64, claimed_sat: u64, fee_sat: u64) -> Block {
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(2))],
+        );
+        synthetic_block(
+            height,
+            vec![
+                simple_coinbase(claimed_sat),
+                rest_tx(
+                    &spend,
+                    Some(Amount::from_sat(fee_sat)),
+                    vec![Some(prevout(
+                        height - 1,
+                        1_000 + fee_sat,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn coinbase_unclaimed_sat_is_zero_when_the_whole_reward_is_claimed() {
+        let block = block_claiming(100_000, 5_000_000_000 + 1_234, 1_234);
+        assert_eq!(block_stats(&block).coinbase_unclaimed_sat, 0);
+    }
+
+    #[test]
+    fn coinbase_unclaimed_sat_is_the_part_of_the_reward_the_miner_left_behind() {
+        let block = block_claiming(100_000, 5_000_000_000, 1_234);
+        assert_eq!(block_stats(&block).coinbase_unclaimed_sat, 1_234);
+    }
+
+    #[test]
+    fn coinbase_unclaimed_sat_is_zero_when_the_miner_claims_too_much() {
+        // Such a block would be invalid, but the stats must not underflow.
+        let block = block_claiming(100_000, 6_000_000_000, 1_234);
+        assert_eq!(block_stats(&block).coinbase_unclaimed_sat, 0);
+    }
+
+    #[test]
+    fn coinbase_subsidy_halves_every_210000_blocks() {
+        // With a coinbase claiming nothing, the unclaimed amount is the subsidy.
+        for (height, subsidy) in [
+            (0, 5_000_000_000),
+            (209_999, 5_000_000_000),
+            (210_000, 2_500_000_000),
+            (419_999, 2_500_000_000),
+            (420_000, 1_250_000_000),
+            (630_000, 625_000_000),
+            (840_000, 312_500_000),
+        ] {
+            let block = synthetic_block(height, vec![simple_coinbase(0)]);
+            assert_eq!(
+                block_stats(&block).coinbase_unclaimed_sat,
+                subsidy,
+                "wrong subsidy at height {}",
+                height
+            );
+        }
+    }
+
+    #[test]
+    fn coinbase_locktime_set_is_false_without_a_locktime() {
+        let coinbase = coinbase_tx(&[(1, p2wpkh_script(0))], 0, Sequence::MAX);
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(!block_stats(&block).coinbase_locktime_set);
+    }
+
+    #[test]
+    fn coinbase_locktime_set_is_true_with_a_locktime() {
+        let coinbase = coinbase_tx(&[(1, p2wpkh_script(0))], 799_999, Sequence::MAX);
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(block_stats(&block).coinbase_locktime_set);
+    }
+
+    #[test]
+    fn coinbase_locktime_is_bip54_with_the_previous_height_and_a_non_final_sequence() {
+        let coinbase = coinbase_tx(
+            &[(1, p2wpkh_script(0))],
+            799_999,
+            Sequence::from_consensus(0),
+        );
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(block_stats(&block).coinbase_locktime_set_bip54);
+    }
+
+    #[test]
+    fn coinbase_locktime_is_not_bip54_with_a_final_sequence() {
+        let coinbase = coinbase_tx(&[(1, p2wpkh_script(0))], 799_999, Sequence::MAX);
+        let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+        assert!(!block_stats(&block).coinbase_locktime_set_bip54);
+    }
+
+    #[test]
+    fn coinbase_locktime_is_not_bip54_with_the_wrong_height() {
+        for lock_time in [799_998, 800_000] {
+            let coinbase = coinbase_tx(
+                &[(1, p2wpkh_script(0))],
+                lock_time,
+                Sequence::from_consensus(0),
+            );
+            let block = synthetic_block(800_000, vec![rest_tx(&coinbase, None, vec![None])]);
+            assert!(
+                !block_stats(&block).coinbase_locktime_set_bip54,
+                "locktime {} should not count as a BIP54 locktime",
+                lock_time
+            );
+        }
+    }
+
+    #[test]
+    fn a_block_with_only_a_coinbase_is_empty() {
+        let block = synthetic_block(100_000, vec![simple_coinbase(1)]);
+        assert!(block_stats(&block).empty);
+    }
+
+    #[test]
+    fn a_block_with_a_second_transaction_is_not_empty() {
+        let block = block_claiming(100_000, 1, 0);
+        assert!(!block_stats(&block).empty);
+    }
+
+    #[test]
+    fn block_vsize_is_the_sum_of_the_transaction_vsizes() {
+        let mut block = block_claiming(100_000, 1, 0);
+        block.txdata[0].vsize = 123;
+        block.txdata[1].vsize = 456;
+        assert_eq!(block_stats(&block).vsize, 579);
+    }
+
+    #[test]
+    fn block_bits_difficulty_and_work_come_from_the_header() {
+        // the header of block 361582
+        let block = synthetic_block(361_582, vec![simple_coinbase(1)]);
+        let stats = block_stats(&block);
+        assert_eq!(stats.bits, 0x18162043);
+        assert_eq!(stats.difficulty, 49_692_386_354);
+        assert_eq!(stats.log2_work, 67.532326);
+    }
+
+    #[test]
+    fn pool_id_is_zero_when_the_pool_is_unknown() {
+        // a coinbase without any of the tags or payout addresses the pool
+        // identification knows about
+        let block = synthetic_block(800_000, vec![simple_coinbase(1)]);
+        let pools = bitcoin_pool_identification::default_data(bitcoin::Network::Bitcoin);
+        assert_eq!(block_stats_with(&block, 0, &pools).pool_id, 0);
+    }
+
+    #[test]
+    fn block_sigops_are_taken_from_the_transactions() {
+        let block = synthetic_block(800_000, vec![simple_coinbase(1)]);
+        assert_eq!(block_stats_with(&block, 4_711, &[]).sigops, 4_711);
+    }
+
+    // ---------------------------------------------------------------------
+    // TxStats: versions and transaction shape
+    // ---------------------------------------------------------------------
+
+    fn tx_stats(block: &Block) -> TxStats {
+        let (tx_infos, txns) = decode(block);
+        TxStats::from_block(block, "date".to_string(), &tx_infos, &txns)
+    }
+
+    /// A transaction spending one made up output, with `version`, `lock_time`
+    /// and `sequence` as given.
+    fn simple_spend(version: i32, lock_time: u32, sequence: Sequence, nth: u8) -> RestTx {
+        let tx = spending_tx(
+            version,
+            lock_time,
+            &[(OutPoint::new(fake_txid(nth), 0), sequence)],
+            &[(10_000, p2wpkh_script(nth))],
+        );
+        rest_tx(
+            &tx,
+            Some(Amount::from_sat(1_000)),
+            vec![Some(prevout(
+                1,
+                11_000,
+                ScriptPubkeyType::Witness_v0_KeyHash,
+            ))],
+        )
+    }
+
+    #[test]
+    fn transactions_are_counted_per_version() {
+        let block = synthetic_block(
+            100_000,
+            vec![
+                // the coinbase is a version 1 transaction
+                simple_coinbase(1),
+                simple_spend(1, 0, Sequence::MAX, 1),
+                simple_spend(2, 0, Sequence::MAX, 2),
+                simple_spend(3, 0, Sequence::MAX, 3),
+                simple_spend(4, 0, Sequence::MAX, 4),
+            ],
+        );
+        let stats = tx_stats(&block);
+        assert_eq!(stats.tx_version_1, 2);
+        assert_eq!(stats.tx_version_2, 1);
+        assert_eq!(stats.tx_version_3, 1);
+        assert_eq!(stats.tx_version_unknown, 1);
+    }
+
+    #[test]
+    fn transactions_are_counted_by_their_number_of_inputs_and_outputs() {
+        let one_in_two_out = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(2), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(1)), (1_000, p2wpkh_script(2))],
+        );
+        let one_in_three_out = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(3), 0), Sequence::MAX)],
+            &[
+                (1_000, p2wpkh_script(1)),
+                (1_000, p2wpkh_script(2)),
+                (1_000, p2wpkh_script(3)),
+            ],
+        );
+        let two_in_one_out = spending_tx(
+            2,
+            0,
+            &[
+                (OutPoint::new(fake_txid(4), 0), Sequence::MAX),
+                (OutPoint::new(fake_txid(5), 0), Sequence::MAX),
+            ],
+            &[(1_000, p2wpkh_script(1))],
+        );
+        let fee = Some(Amount::from_sat(1_000));
+        let block = synthetic_block(
+            100_000,
+            vec![
+                // the coinbase has one input and one output
+                simple_coinbase(1),
+                simple_spend(2, 0, Sequence::MAX, 1),
+                rest_tx(&one_in_two_out, fee, vec![None]),
+                rest_tx(&one_in_three_out, fee, vec![None]),
+                rest_tx(&two_in_one_out, fee, vec![None, None]),
+            ],
+        );
+        let stats = tx_stats(&block);
+        assert_eq!(stats.tx_1_input, 4);
+        assert_eq!(stats.tx_1_output, 3);
+        assert_eq!(stats.tx_1_input_1_output, 2);
+        assert_eq!(stats.tx_1_input_2_output, 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // TxStats: timelocks
+    // ---------------------------------------------------------------------
+
+    const NON_FINAL: Sequence = Sequence::ENABLE_LOCKTIME_NO_RBF;
+
+    /// A block at height 100_000 with a single transaction that has the given
+    /// locktime and sequence.
+    fn block_with_locktime(lock_time: u32, sequence: Sequence) -> Block {
+        synthetic_block(
+            100_000,
+            vec![simple_coinbase(1), simple_spend(2, lock_time, sequence, 1)],
+        )
+    }
+
+    #[test]
+    fn a_locktime_below_the_timestamp_threshold_is_a_height_locktime() {
+        let stats = tx_stats(&block_with_locktime(99_999, NON_FINAL));
+        assert_eq!(stats.tx_timelock_height, 1);
+        assert_eq!(stats.tx_timelock_timestamp, 0);
+    }
+
+    #[test]
+    fn a_locktime_above_the_timestamp_threshold_is_a_timestamp_locktime() {
+        let stats = tx_stats(&block_with_locktime(1_434_694_400, NON_FINAL));
+        assert_eq!(stats.tx_timelock_timestamp, 1);
+        assert_eq!(stats.tx_timelock_height, 0);
+        // a timestamp is never compared against the block height
+        assert_eq!(stats.tx_timelock_too_high, 0);
+    }
+
+    #[test]
+    fn a_locktime_of_zero_is_not_counted() {
+        let stats = tx_stats(&block_with_locktime(0, NON_FINAL));
+        assert_eq!(stats.tx_timelock_height, 0);
+        assert_eq!(stats.tx_timelock_timestamp, 0);
+        assert_eq!(stats.tx_timelock_not_enforced, 0);
+        assert_eq!(stats.tx_timelock_too_high, 0);
+    }
+
+    #[test]
+    fn a_locktime_is_not_enforced_when_all_sequences_are_final() {
+        let stats = tx_stats(&block_with_locktime(99_999, Sequence::MAX));
+        assert_eq!(stats.tx_timelock_not_enforced, 1);
+        // it is still counted as a height locktime
+        assert_eq!(stats.tx_timelock_height, 1);
+    }
+
+    #[test]
+    fn a_locktime_is_enforced_when_a_sequence_is_not_final() {
+        let stats = tx_stats(&block_with_locktime(99_999, NON_FINAL));
+        assert_eq!(stats.tx_timelock_not_enforced, 0);
+    }
+
+    #[test]
+    fn a_locktime_at_or_above_the_block_height_is_too_high() {
+        // A transaction is only final in a block if its height locktime is
+        // *below* the height of that block, so a locktime equal to the block
+        // height is already unsatisfiable here. Such transactions do end up in
+        // valid blocks: with all sequences final the locktime is not enforced.
+        for (lock_time, too_high) in [(99_999, 0), (100_000, 1), (100_001, 1)] {
+            let stats = tx_stats(&block_with_locktime(lock_time, Sequence::MAX));
+            assert_eq!(
+                stats.tx_timelock_too_high, too_high,
+                "locktime {} in a block at height 100000",
+                lock_time
+            );
+        }
+    }
+
+    #[test]
+    fn a_locktime_of_zero_in_the_genesis_block_is_not_too_high() {
+        // A locktime of zero means no locktime, even at height zero, where it
+        // is otherwise equal to the block height.
+        let block = synthetic_block(
+            0,
+            vec![simple_coinbase(1), simple_spend(2, 0, Sequence::MAX, 1)],
+        );
+        assert_eq!(tx_stats(&block).tx_timelock_too_high, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // TxStats: ephemeral dust
+    // ---------------------------------------------------------------------
+
+    /// A block with a zero-fee version 3 parent that creates a dust output and
+    /// a version 3 child paying a fee that spends it. `other_output_sat` is
+    /// the value of the parent's other output; with 10_000 sat the parent has
+    /// exactly one dust output, which is what the rule asks for.
+    fn ephemeral_dust_block(other_output_sat: u64) -> Block {
+        // 1 sat into a P2WPKH output, which is dust below 294 sat
+        ephemeral_dust_block_with(1, other_output_sat, 1)
+    }
+
+    /// The same block, with the child spending the parent's output `vout`.
+    /// The dust is in output 1, the other output is output 0, so a test can
+    /// tell the two apart.
+    fn ephemeral_dust_block_spending(other_output_sat: u64, vout: u32) -> Block {
+        ephemeral_dust_block_with(1, other_output_sat, vout)
+    }
+
+    /// The same block with `dust_sat` in the parent's output 1.
+    fn ephemeral_dust_block_with(dust_sat: u64, other_output_sat: u64, vout: u32) -> Block {
+        let parent = spending_tx(
+            3,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[
+                (other_output_sat, p2wpkh_script(2)),
+                (dust_sat, p2wpkh_script(1)),
+            ],
+        );
+        let child = spending_tx(
+            3,
+            0,
+            &[(OutPoint::new(parent.compute_txid(), vout), Sequence::MAX)],
+            &[(900, p2wpkh_script(3))],
+        );
+        synthetic_block(
+            100_000,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&parent, Some(Amount::ZERO), vec![None]),
+                rest_tx(&child, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        )
+    }
+
+    #[test]
+    fn a_child_spending_ephemeral_dust_is_counted() {
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block(10_000)).tx_spending_ephemeral_dust,
+            1
+        );
+    }
+
+    #[test]
+    fn an_output_at_the_dust_threshold_is_not_ephemeral_dust() {
+        // 294 sat is the lowest value a P2WPKH output can hold without being
+        // dust, so this parent has no dust output at all
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block_with(294, 10_000, 1)).tx_spending_ephemeral_dust,
+            0
+        );
+        // one sat less and the child spending it counts
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block_with(293, 10_000, 1)).tx_spending_ephemeral_dust,
+            1
+        );
+    }
+
+    #[test]
+    fn unspent_ephemeral_dust_is_not_counted() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata.pop();
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_the_child_to_spend_the_dust_output() {
+        // the child spends the parent's other output and leaves the dust alone
+        assert_eq!(
+            tx_stats(&ephemeral_dust_block_spending(10_000, 0)).tx_spending_ephemeral_dust,
+            0
+        );
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_version_3_parent() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[1].version = 2;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_parent_without_a_fee() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[1].fee = Some(Amount::from_sat(1));
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_parent_of_at_most_10000_vbyte() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[1].vsize = 10_000;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 1);
+        block.txdata[1].vsize = 10_001;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_parent_with_a_single_dust_output() {
+        // a second dust output: the parent was likely handed to a miner
+        // out-of-band rather than submitted over the p2p network
+        let block = ephemeral_dust_block(1);
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_version_3_child() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].version = 2;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_child_paying_a_fee() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].fee = Some(Amount::ZERO);
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_needs_a_child_of_at_most_1000_vbyte() {
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].vsize = 1_000;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 1);
+        block.txdata[2].vsize = 1_001;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    #[test]
+    fn ephemeral_dust_is_not_counted_when_the_child_has_no_fee_set() {
+        // Bitcoin Core reports a fee for every non-coinbase transaction, but
+        // the stats must not panic if it ever doesn't.
+        let mut block = ephemeral_dust_block(10_000);
+        block.txdata[2].fee = None;
+        assert_eq!(tx_stats(&block).tx_spending_ephemeral_dust, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // InputStats: how old the spent outputs are
+    // ---------------------------------------------------------------------
+
+    fn input_stats(block: &Block) -> InputStats {
+        let (tx_infos, txns) = decode(block);
+        InputStats::from_block(block, "date".to_string(), &tx_infos, &txns)
+    }
+
+    const TEST_HEIGHT: i64 = 100_000;
+
+    /// A block at `TEST_HEIGHT` with one transaction spending an output per
+    /// entry of `prevout_heights`.
+    fn block_spending_outputs_from(prevout_heights: &[i64]) -> Block {
+        let outpoints: Vec<_> = (0..prevout_heights.len())
+            .map(|i| (OutPoint::new(fake_txid(i as u8 + 1), 0), Sequence::MAX))
+            .collect();
+        let tx = spending_tx(2, 0, &outpoints, &[(1_000, p2wpkh_script(1))]);
+        let prevouts = prevout_heights
+            .iter()
+            .map(|height| {
+                Some(prevout(
+                    *height,
+                    10_000,
+                    ScriptPubkeyType::Witness_v0_KeyHash,
+                ))
+            })
+            .collect();
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&tx, Some(Amount::from_sat(100)), prevouts),
+            ],
+        )
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_block_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT, TEST_HEIGHT - 1, TEST_HEIGHT - 2]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_1_blocks, 2);
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_6_blocks_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 6, TEST_HEIGHT - 7]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_6_blocks, 1);
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_144_blocks_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 144, TEST_HEIGHT - 145]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_144_blocks, 1);
+    }
+
+    #[test]
+    fn inputs_spending_outputs_from_the_last_2016_blocks_are_counted() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 2016, TEST_HEIGHT - 2017]);
+        assert_eq!(input_stats(&block).inputs_spending_prev_2016_blocks, 1);
+    }
+
+    #[test]
+    fn the_age_windows_build_on_each_other() {
+        let block = block_spending_outputs_from(&[TEST_HEIGHT - 1]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_spending_prev_1_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_6_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_144_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_2016_blocks, 1);
+    }
+
+    /// A block at `TEST_HEIGHT` in which a child spends an output its parent
+    /// creates in the same block. `child_prevout_height` is what the node
+    /// reports as the height of that output.
+    fn same_block_spend_block(child_prevout_height: i64) -> Block {
+        let parent = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(10_000, p2wpkh_script(1))],
+        );
+        let child = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(parent.compute_txid(), 0), Sequence::MAX)],
+            &[(9_000, p2wpkh_script(2))],
+        );
+        let fee = Some(Amount::from_sat(1_000));
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(
+                    &parent,
+                    fee,
+                    vec![Some(prevout(
+                        TEST_HEIGHT - 5_000,
+                        11_000,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+                rest_tx(
+                    &child,
+                    fee,
+                    vec![Some(prevout(
+                        child_prevout_height,
+                        10_000,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn an_output_spent_in_the_block_it_was_created_in_is_counted() {
+        // Bitcoin Core reports the block's own height for an output that was
+        // created in this very block.
+        let stats = input_stats(&same_block_spend_block(TEST_HEIGHT));
+        assert_eq!(stats.inputs_spend_in_same_block, 1);
+        // The age of the same-block spend is 0, so it falls into every window.
+        // The parent spends a 5000 block old output and falls into none.
+        assert_eq!(stats.inputs_spending_prev_1_blocks, 1);
+        assert_eq!(stats.inputs_spending_prev_2016_blocks, 1);
+    }
+
+    #[test]
+    fn a_same_block_spend_is_found_by_txid_even_with_a_zero_prevout_height() {
+        // Bitcoin Core doesn't report a height of zero here, but the txid check
+        // is kept as a safety net in case a node ever does. The age then stays
+        // zero instead of becoming the block height.
+        let stats = input_stats(&same_block_spend_block(0));
+        assert_eq!(stats.inputs_spend_in_same_block, 1);
+        assert_eq!(stats.inputs_spending_prev_1_blocks, 1);
+    }
+
+    #[test]
+    fn the_coinbase_input_is_not_counted_as_spending_an_output() {
+        let block = synthetic_block(TEST_HEIGHT, vec![simple_coinbase(1)]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_coinbase, 1);
+        assert_eq!(stats.inputs_spend_in_same_block, 0);
+        assert_eq!(stats.inputs_spending_prev_2016_blocks, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Pay-to-anchor inputs and outputs
+    // ---------------------------------------------------------------------
+
+    fn output_stats(block: &Block) -> OutputStats {
+        let (tx_infos, _) = decode(block);
+        OutputStats::from_block(block, "date".to_string(), &tx_infos)
+    }
+
+    /// The P2A output script `OP_PUSHNUM_1 OP_PUSHBYTES_2 4e73`.
+    fn p2a_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0x51, 0x02, 0x4e, 0x73])
+    }
+
+    /// A block with one transaction spending a P2A output per entry of `values`.
+    fn block_spending_anchors(values: &[u64]) -> Block {
+        let outpoints: Vec<_> = (0..values.len())
+            .map(|i| (OutPoint::new(fake_txid(i as u8 + 1), 0), Sequence::MAX))
+            .collect();
+        let tx = spending_tx(2, 0, &outpoints, &[(1_000, p2wpkh_script(1))]);
+        let prevouts = values
+            .iter()
+            .map(|value| Some(prevout(TEST_HEIGHT - 1, *value, ScriptPubkeyType::Anchor)))
+            .collect();
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&tx, Some(Amount::from_sat(100)), prevouts),
+            ],
+        )
+    }
+
+    #[test]
+    fn spent_anchor_outputs_below_240_sat_are_dust() {
+        let stats = input_stats(&block_spending_anchors(&[100, 239, 240, 241]));
+        assert_eq!(stats.inputs_p2a, 4);
+        // every value below 240 sat counts, not just the one right below it
+        assert_eq!(stats.inputs_p2a_dust, 2);
+    }
+
+    #[test]
+    fn anchor_inputs_are_not_counted_as_unknown() {
+        // The input itself is empty, so it can only be recognized as an anchor
+        // spend through the type Bitcoin Core reports for the output it spends.
+        let stats = input_stats(&block_spending_anchors(&[240]));
+        assert_eq!(stats.inputs_p2a, 1);
+        assert_eq!(stats.inputs_unknown, 0);
+    }
+
+    #[test]
+    fn anchor_outputs_below_240_sat_are_dust() {
+        let tx = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[
+                (100, p2a_script()),
+                (239, p2a_script()),
+                (240, p2a_script()),
+                (241, p2a_script()),
+            ],
+        );
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&tx, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        );
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_p2a, 4);
+        // every value below 240 sat counts, not just the one right below it
+        assert_eq!(stats.outputs_p2a_dust, 2);
+        assert_eq!(stats.outputs_p2a_amount, 820);
+    }
+
+    #[test]
+    fn the_unknown_input_count_stays_at_zero_for_an_anchor_spend_with_a_witness() {
+        // Anchor outputs are spendable by anyone and only relayed with an empty
+        // witness, but a miner can mine a spend that carries one. Such an input
+        // is recognized by its witness and never lands in the unknown bucket,
+        // so nothing must be taken out of it either.
+        let mut tx = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(1))],
+        );
+        tx.input[0].witness = Witness::from_slice(&[[0u8; 64]]);
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(
+                    &tx,
+                    Some(Amount::from_sat(100)),
+                    vec![Some(prevout(
+                        TEST_HEIGHT - 1,
+                        240,
+                        ScriptPubkeyType::Anchor,
+                    ))],
+                ),
+            ],
+        );
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_p2a, 1);
+        assert_eq!(stats.inputs_p2tr_keypath, 1);
+        assert_eq!(stats.inputs_unknown, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // OutputStats: OP_RETURN data and coinbase outputs
+    // ---------------------------------------------------------------------
+
+    use super::calculate_opreturn_data_size;
+
+    #[test]
+    fn a_script_that_is_not_an_op_return_has_no_op_return_data() {
+        assert_eq!(calculate_opreturn_data_size(&p2wpkh_script(1)), 0);
+    }
+
+    #[test]
+    fn a_bare_op_return_has_no_data() {
+        assert_eq!(
+            calculate_opreturn_data_size(&ScriptBuf::from_bytes(vec![0x6a])),
+            0
+        );
+    }
+
+    #[test]
+    fn op_return_data_is_the_length_of_a_single_push() {
+        // OP_RETURN OP_PUSHBYTES_3 010203
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03]);
+        assert_eq!(calculate_opreturn_data_size(&script), 3);
+    }
+
+    #[test]
+    fn op_return_data_adds_up_several_pushes() {
+        // OP_RETURN OP_PUSHBYTES_3 010203 OP_PUSHBYTES_2 0405
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03, 0x02, 0x04, 0x05]);
+        assert_eq!(calculate_opreturn_data_size(&script), 5);
+    }
+
+    #[test]
+    fn op_return_data_does_not_count_opcodes() {
+        // OP_RETURN OP_PUSHNUM_1 OP_ADD
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x51, 0x93]);
+        assert_eq!(calculate_opreturn_data_size(&script), 0);
+    }
+
+    #[test]
+    fn op_return_data_stops_at_a_truncated_push() {
+        // OP_RETURN OP_PUSHBYTES_3 010203 OP_PUSHBYTES_4 0405, with the last
+        // push claiming four bytes while only two follow
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03, 0x04, 0x04, 0x05]);
+        assert_eq!(calculate_opreturn_data_size(&script), 3);
+    }
+
+    #[test]
+    fn op_return_data_does_not_count_the_pushdata_length_byte() {
+        // OP_RETURN OP_PUSHDATA1 0x50 <80 bytes>: the usual 80 byte payload
+        // needs OP_PUSHDATA1, which takes the length as an extra byte
+        let mut v = vec![0x6a, 0x4c, 0x50];
+        v.extend([0x42; 80]);
+        assert_eq!(calculate_opreturn_data_size(&ScriptBuf::from_bytes(v)), 80);
+    }
+
+    /// The OP_RETURN script a coinbase commits the witness root hash in:
+    /// `OP_RETURN OP_PUSHBYTES_36 aa21a9ed <32 byte commitment>`.
+    fn witness_commitment_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x24, 0xaa, 0x21, 0xa9, 0xed];
+        v.extend([0x11; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    #[test]
+    fn the_outputs_of_the_coinbase_are_counted_separately() {
+        let coinbase = coinbase_tx(
+            &[
+                (5_000_000_000, p2wpkh_script(1)),
+                (0, witness_commitment_script()),
+            ],
+            0,
+            Sequence::MAX,
+        );
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(1_000, p2wpkh_script(2))],
+        );
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                rest_tx(&coinbase, None, vec![None]),
+                rest_tx(&spend, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        );
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_coinbase, 2);
+        assert_eq!(stats.outputs_coinbase_p2wpkh, 1);
+        assert_eq!(stats.outputs_coinbase_opreturn, 1);
+        // the transaction after the coinbase is not counted as coinbase
+        assert_eq!(stats.outputs_p2wpkh, 2);
+    }
+
+    #[test]
+    fn a_witness_commitment_is_counted_in_the_coinbase() {
+        let coinbase = coinbase_tx(&[(0, witness_commitment_script())], 0, Sequence::MAX);
+        let block = synthetic_block(TEST_HEIGHT, vec![rest_tx(&coinbase, None, vec![None])]);
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_opreturn, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_witness_commitment, 1);
+        assert_eq!(stats.outputs_opreturn_bytes, 36);
+    }
+
+    #[test]
+    fn a_witness_commitment_outside_the_coinbase_is_not_counted_as_one() {
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &[(0, witness_commitment_script())],
+        );
+        let block = synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                simple_coinbase(1),
+                rest_tx(&spend, Some(Amount::from_sat(100)), vec![None]),
+            ],
+        );
+        let stats = output_stats(&block);
+        assert_eq!(stats.outputs_opreturn, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_witness_commitment, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // OutputStats: the output types
+    // ---------------------------------------------------------------------
+
+    /// A public key on the curve, compressed (33 byte) or uncompressed (65 byte).
+    fn pubkey_bytes(compressed: bool) -> Vec<u8> {
+        let secp = bitcoin::secp256k1::Secp256k1::new();
+        let secret = bitcoin::secp256k1::SecretKey::from_slice(&[0x11; 32])
+            .expect("the secret key to be valid");
+        let public = bitcoin::secp256k1::PublicKey::from_secret_key(&secp, &secret);
+        if compressed {
+            public.serialize().to_vec()
+        } else {
+            public.serialize_uncompressed().to_vec()
+        }
+    }
+
+    /// A P2PK output script: `<pubkey> OP_CHECKSIG`.
+    fn p2pk_script(compressed: bool) -> ScriptBuf {
+        let key = pubkey_bytes(compressed);
+        let mut v = vec![key.len() as u8];
+        v.extend(key);
+        v.push(0xac);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A bare 1-of-1 multisig output script.
+    fn p2ms_script() -> ScriptBuf {
+        let key = pubkey_bytes(true);
+        let mut v = vec![0x51, key.len() as u8];
+        v.extend(key);
+        v.extend([0x51, 0xae]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A P2WSH output script.
+    fn p2wsh_script() -> ScriptBuf {
+        let mut v = vec![0x00, 0x20];
+        v.extend([0x22; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A P2TR output script.
+    fn p2tr_script() -> ScriptBuf {
+        let mut v = vec![0x51, 0x20];
+        v.extend([0x33; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A script that is none of the known output types: `OP_PUSHNUM_2 OP_ADD`.
+    fn unknown_script() -> ScriptBuf {
+        ScriptBuf::from_bytes(vec![0x52, 0x93])
+    }
+
+    /// A block whose coinbase and whose second transaction both pay
+    /// `value_sat` to each of `scripts`.
+    fn block_with_outputs(value_sat: u64, scripts: &[ScriptBuf]) -> Block {
+        let outputs: Vec<(u64, ScriptBuf)> = scripts
+            .iter()
+            .map(|script| (value_sat, script.clone()))
+            .collect();
+        let coinbase = coinbase_tx(&outputs, 0, Sequence::MAX);
+        let spend = spending_tx(
+            2,
+            0,
+            &[(OutPoint::new(fake_txid(1), 0), Sequence::MAX)],
+            &outputs,
+        );
+        synthetic_block(
+            TEST_HEIGHT,
+            vec![
+                rest_tx(&coinbase, None, vec![None]),
+                rest_tx(
+                    &spend,
+                    Some(Amount::from_sat(100)),
+                    vec![Some(prevout(
+                        TEST_HEIGHT - 10,
+                        1_100,
+                        ScriptPubkeyType::Witness_v0_KeyHash,
+                    ))],
+                ),
+            ],
+        )
+    }
+
+    #[test]
+    fn pay_to_public_key_outputs_are_counted_with_their_amount() {
+        let stats = output_stats(&block_with_outputs(1_000, &[p2pk_script(true)]));
+        assert_eq!(stats.outputs_p2pk, 2);
+        assert_eq!(stats.outputs_p2pk_amount, 2_000);
+        assert_eq!(stats.outputs_coinbase_p2pk, 1);
+    }
+
+    #[test]
+    fn bare_multisig_outputs_are_counted_with_their_amount() {
+        let stats = output_stats(&block_with_outputs(1_000, &[p2ms_script()]));
+        assert_eq!(stats.outputs_p2ms, 2);
+        assert_eq!(stats.outputs_p2ms_amount, 2_000);
+        assert_eq!(stats.outputs_coinbase_p2ms, 1);
+    }
+
+    #[test]
+    fn outputs_of_an_unknown_type_are_counted_with_their_amount() {
+        let stats = output_stats(&block_with_outputs(1_000, &[unknown_script()]));
+        assert_eq!(stats.outputs_unknown, 2);
+        assert_eq!(stats.outputs_unknown_amount, 2_000);
+        assert_eq!(stats.outputs_coinbase_unknown, 1);
+    }
+
+    #[test]
+    fn the_amount_burned_in_an_op_return_output_is_counted() {
+        // OP_RETURN OP_PUSHBYTES_3 010203
+        let script = ScriptBuf::from_bytes(vec![0x6a, 0x03, 0x01, 0x02, 0x03]);
+        let stats = output_stats(&block_with_outputs(1_000, &[script]));
+        assert_eq!(stats.outputs_opreturn, 2);
+        assert_eq!(stats.outputs_opreturn_amount, 2_000);
+    }
+
+    #[test]
+    fn the_coinbase_outputs_are_counted_for_every_script_type() {
+        let stats = output_stats(&block_with_outputs(
+            1_000,
+            &[
+                p2pk_script(true),
+                p2ms_script(),
+                p2wsh_script(),
+                p2tr_script(),
+                unknown_script(),
+            ],
+        ));
+        assert_eq!(stats.outputs_coinbase, 5);
+        assert_eq!(stats.outputs_coinbase_p2pk, 1);
+        assert_eq!(stats.outputs_coinbase_p2ms, 1);
+        assert_eq!(stats.outputs_coinbase_p2wsh, 1);
+        assert_eq!(stats.outputs_coinbase_p2tr, 1);
+        assert_eq!(stats.outputs_coinbase_unknown, 1);
+    }
+
+    /// An OmniLayer OP_RETURN: `OP_RETURN OP_PUSHBYTES_20 "omni" <16 byte>`.
+    fn omni_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x14];
+        v.extend(b"omni");
+        v.extend([0x44; 16]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A BIP 47 payment code notification OP_RETURN: `OP_RETURN OP_PUSHDATA1 80
+    /// <version> <features> <sign> <x value> <chain code> <13 zero byte>`.
+    fn bip47_script() -> ScriptBuf {
+        let mut payload = vec![0x01, 0x00, 0x02];
+        payload.extend([0x55; 32]);
+        payload.extend([0x66; 32]);
+        payload.extend([0x00; 13]);
+        let mut v = vec![0x6a, 0x4c, payload.len() as u8];
+        v.extend(payload);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A CoreDao OP_RETURN: `OP_RETURN OP_PUSHBYTES_45 "CORE" <version> <40 byte>`.
+    fn coredao_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x2d];
+        v.extend(b"CORE");
+        v.push(0x01);
+        v.extend([0x77; 40]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// An ExSat OP_RETURN: `OP_RETURN OP_PUSHBYTES_18 "EXSAT" <version> <12 byte>`.
+    fn exsat_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x12];
+        v.extend(b"EXSAT");
+        v.push(0x01);
+        v.extend([0x88; 12]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A Hathor Network OP_RETURN: `OP_RETURN OP_PUSHBYTES_36 "Hath" <32 byte>`.
+    fn hathor_script() -> ScriptBuf {
+        let mut v = vec![0x6a, 0x24];
+        v.extend(b"Hath");
+        v.extend([0x99; 32]);
+        ScriptBuf::from_bytes(v)
+    }
+
+    #[test]
+    fn op_return_outputs_are_counted_by_their_flavor() {
+        let stats = output_stats(&block_with_outputs(0, &[omni_script(), bip47_script()]));
+        assert_eq!(stats.outputs_opreturn, 4);
+        assert_eq!(stats.outputs_opreturn_omnilayer, 2);
+        assert_eq!(stats.outputs_opreturn_bip47_payment_code, 2);
+    }
+
+    #[test]
+    fn the_merged_mining_markers_are_only_counted_in_the_coinbase() {
+        // the same outputs are in the coinbase and in the transaction after it
+        let stats = output_stats(&block_with_outputs(
+            0,
+            &[coredao_script(), exsat_script(), hathor_script()],
+        ));
+        assert_eq!(stats.outputs_opreturn, 6);
+        assert_eq!(stats.outputs_opreturn_coinbase_coredao, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_exsat, 1);
+        assert_eq!(stats.outputs_opreturn_coinbase_hathor, 1);
+    }
+
+    // ---------------------------------------------------------------------
+    // FeerateStats
+    // ---------------------------------------------------------------------
+
+    fn feerate_stats(block: &Block) -> FeerateStats {
+        let (tx_infos, _) = decode(block);
+        FeerateStats::from_block(block, "date".to_string(), &tx_infos)
+    }
+
+    /// A block whose transactions pay the given fees. Every transaction is
+    /// 100 vbyte and 110 byte, so a fee of 100 sat is a fee rate of 1 sat/vB.
+    fn block_with_fees(fees: &[Option<u64>]) -> Block {
+        let mut txdata = vec![simple_coinbase(1)];
+        for (i, fee) in fees.iter().enumerate() {
+            let tx = spending_tx(
+                2,
+                0,
+                &[(OutPoint::new(fake_txid(i as u8 + 1), 0), Sequence::MAX)],
+                &[(1_000, p2wpkh_script(1))],
+            );
+            let mut tx = rest_tx(&tx, fee.map(Amount::from_sat), vec![None]);
+            tx.vsize = 100;
+            tx.size = 110;
+            txdata.push(tx);
+        }
+        synthetic_block(TEST_HEIGHT, txdata)
+    }
+
+    #[test]
+    fn transactions_are_counted_in_fee_rate_bands() {
+        // two transactions per band: one at the lower boundary of the band and
+        // one just below the next one
+        let stats = feerate_stats(&block_with_fees(&[
+            Some(99),
+            Some(100),
+            Some(199),
+            Some(200),
+            Some(499),
+            Some(500),
+            Some(999),
+            Some(1_000),
+            Some(2_499),
+            Some(2_500),
+            Some(4_999),
+            Some(5_000),
+            Some(9_999),
+            Some(10_000),
+            Some(24_999),
+            Some(25_000),
+            Some(49_999),
+            Some(50_000),
+            Some(99_999),
+            Some(100_000),
+        ]));
+        assert_eq!(stats.below_1_sat_vbyte, 1);
+        assert_eq!(stats.feerate_1_2_sat_vbyte, 2);
+        assert_eq!(stats.feerate_2_5_sat_vbyte, 2);
+        assert_eq!(stats.feerate_5_10_sat_vbyte, 2);
+        assert_eq!(stats.feerate_10_25_sat_vbyte, 2);
+        assert_eq!(stats.feerate_25_50_sat_vbyte, 2);
+        assert_eq!(stats.feerate_50_100_sat_vbyte, 2);
+        assert_eq!(stats.feerate_100_250_sat_vbyte, 2);
+        assert_eq!(stats.feerate_250_500_sat_vbyte, 2);
+        assert_eq!(stats.feerate_500_1000_sat_vbyte, 2);
+        assert_eq!(stats.feerate_1000_plus_sat_vbyte, 1);
+    }
+
+    #[test]
+    fn a_transaction_paying_a_fee_of_zero_is_counted() {
+        let stats = feerate_stats(&block_with_fees(&[Some(0)]));
+        assert_eq!(stats.zero_fee_tx, 1);
+        assert_eq!(stats.below_1_sat_vbyte, 1);
+    }
+
+    #[test]
+    fn the_coinbase_is_left_out_of_the_fee_rate_stats() {
+        let stats = feerate_stats(&block_with_fees(&[]));
+        // the coinbase has a size and no fee, so counting it would show here
+        assert_eq!(stats.size_sum, 0);
+        assert_eq!(stats.zero_fee_tx, 0);
+        assert_eq!(stats.fee_min, 0);
+        assert_eq!(stats.fee_max, 0);
+        assert_eq!(stats.fee_sum, 0);
+        assert_eq!(stats.fee_avg, 0.0);
+        assert_eq!(stats.fee_50th_percentile, 0);
+        assert_eq!(stats.size_avg, 0.0);
+        assert_eq!(stats.feerate_min, 0.0);
+        assert_eq!(stats.feerate_max, 0.0);
+        assert_eq!(stats.feerate_avg, 0.0);
+        // a NaN percentile is stored as 0, the database column is NOT NULL
+        assert_eq!(stats.feerate_50th_percentile, 0.0);
+    }
+
+    #[test]
+    fn the_fee_rate_stats_of_a_single_transaction() {
+        let stats = feerate_stats(&block_with_fees(&[Some(1_000)]));
+        assert_eq!(stats.fee_min, 1_000);
+        assert_eq!(stats.fee_max, 1_000);
+        assert_eq!(stats.fee_50th_percentile, 1_000);
+        assert_eq!(stats.fee_sum, 1_000);
+        assert_eq!(stats.fee_avg, 1_000.0);
+        assert_eq!(stats.size_min, 110);
+        assert_eq!(stats.size_max, 110);
+        assert_eq!(stats.size_sum, 110);
+        assert_eq!(stats.feerate_min, 10.0);
+        assert_eq!(stats.feerate_max, 10.0);
+        assert_eq!(stats.feerate_avg, 10.0);
+    }
+
+    #[test]
+    fn the_fee_rate_stats_of_two_transactions() {
+        let stats = feerate_stats(&block_with_fees(&[Some(100), Some(300)]));
+        assert_eq!(stats.fee_min, 100);
+        assert_eq!(stats.fee_max, 300);
+        assert_eq!(stats.fee_sum, 400);
+        assert_eq!(stats.fee_avg, 200.0);
+        assert_eq!(stats.size_sum, 220);
+        assert_eq!(stats.feerate_min, 1.0);
+        assert_eq!(stats.feerate_max, 3.0);
+        assert_eq!(stats.feerate_avg, 2.0);
+    }
+
+    #[test]
+    fn the_fee_rate_stats_of_a_block_without_transactions_are_empty() {
+        // Every block has a coinbase transaction, but a block that somehow
+        // arrives without one must not take the stats generation down.
+        let block = synthetic_block(TEST_HEIGHT, vec![]);
+        let stats = feerate_stats(&block);
+        assert_eq!(stats.fee_sum, 0);
+        assert_eq!(stats.fee_avg, 0.0);
+    }
+
+    #[test]
+    fn a_transaction_without_a_fee_is_counted_like_one_paying_zero() {
+        // Bitcoin Core reports a fee for every non-coinbase transaction. If it
+        // ever doesn't, the missing fee is treated as zero throughout these
+        // stats - in the fee sum, in the percentiles and in the fee rate bands
+        // - so the zero fee count has to agree with that.
+        let stats = feerate_stats(&block_with_fees(&[None]));
+        assert_eq!(stats.below_1_sat_vbyte, 1);
+        assert_eq!(stats.zero_fee_tx, 1);
+        assert_eq!(stats.fee_sum, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // ScriptStats
+    //
+    // Signatures and public keys can't be made up, so these tests pick the
+    // transactions they need out of the fixture blocks. Parsing a fixture is by
+    // far the most expensive thing the tests do, so each file is read and
+    // deserialized at most once per test binary and then handed out as a
+    // `&'static Block`.
+    // ---------------------------------------------------------------------
+
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Loads `testdata/<name>.json`, parsing it only the first time it is asked for.
+    fn fixture(name: &str) -> &'static Block {
+        static CACHE: OnceLock<Mutex<HashMap<String, &'static Block>>> = OnceLock::new();
+        let mut cache = CACHE
+            .get_or_init(|| Mutex::new(HashMap::new()))
+            .lock()
+            .unwrap();
+        cache.entry(name.to_string()).or_insert_with(|| {
+            let buffer = BufReader::new(File::open(format!("./testdata/{}.json", name)).unwrap());
+            let mut de = serde_json::Deserializer::from_reader(buffer);
+            let block = Block::deserialize(&mut de).expect("test block json to be valid");
+            &*Box::leak(Box::new(block))
+        })
+    }
+
+    /// A block with the header of the fixture `name` and the transactions of
+    /// that fixture at `indices`. The coinbase transaction always comes first
+    /// and only once, whether or not `indices` lists it. The header keeps the
+    /// size, stripped size and weight of the whole fixture block, so don't
+    /// assert on those.
+    fn block_from_txs(name: &str, indices: &[usize]) -> Block {
+        let source = fixture(name);
+        let mut txdata = vec![source.txdata[0].clone()];
+        txdata.extend(
+            indices
+                .iter()
+                .filter(|index| **index != 0)
+                .map(|index| source.txdata[*index].clone()),
+        );
+        Block {
+            hash: source.hash,
+            size: source.size,
+            stripped_size: source.stripped_size,
+            weight: source.weight,
+            height: source.height,
+            version: source.version,
+            txdata,
+            time: source.time,
+            nonce: source.nonce,
+            bits: source.bits.clone(),
+        }
+    }
+
+    fn script_stats(block: &Block) -> ScriptStats {
+        let (tx_infos, _) = decode(block);
+        ScriptStats::from_block(block, "date".to_string(), &tx_infos)
+    }
+
+    #[test]
+    fn ecdsa_signatures_are_counted_by_their_length() {
+        let stats = script_stats(&block_from_txs("739990", &[157, 3, 6]));
+        assert_eq!(stats.sigs_ecdsa, 3);
+        assert_eq!(stats.sigs_ecdsa_strict_der, 3);
+        assert_eq!(stats.sigs_ecdsa_length_less_70byte, 0);
+        assert_eq!(stats.sigs_ecdsa_length_70byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_71byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_72byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_73byte, 0);
+
+        let stats = script_stats(&block_from_txs("361582", &[26]));
+        assert_eq!(stats.sigs_ecdsa_length_73byte, 1);
+    }
+
+    #[test]
+    fn ecdsa_signatures_are_counted_by_their_r_and_s_value() {
+        // three signatures with a low r (one of them with a high s), one with a
+        // high r and a low s, and one with both a high r and a high s
+        let stats = script_stats(&block_from_txs("361582", &[23, 25, 26]));
+        assert_eq!(stats.sigs_ecdsa, 5);
+        assert_eq!(stats.sigs_ecdsa_low_r, 3);
+        assert_eq!(stats.sigs_ecdsa_high_r, 2);
+        assert_eq!(stats.sigs_ecdsa_low_s, 3);
+        assert_eq!(stats.sigs_ecdsa_high_s, 2);
+        assert_eq!(stats.sigs_ecdsa_low_rs, 2);
+        assert_eq!(stats.sigs_ecdsa_high_rs, 1);
+        assert_eq!(stats.sigs_ecdsa_low_r_high_s, 1);
+        assert_eq!(stats.sigs_ecdsa_high_r_low_s, 1);
+    }
+
+    #[test]
+    fn schnorr_signatures_are_counted_on_their_own() {
+        // a taproot key path spend
+        let stats = script_stats(&block_from_txs("739990", &[619]));
+        assert_eq!(stats.sigs_schnorr, 1);
+        assert_eq!(stats.sigs_ecdsa, 0);
+        // the length and sighash counters are only kept for ECDSA signatures
+        assert_eq!(stats.sigs_sighashes, 0);
+    }
+
+    #[test]
+    fn signatures_are_counted_by_their_sighash_flag() {
+        // two signatures with SIGHASH_ALL | SIGHASH_ANYONECANPAY
+        let stats = script_stats(&block_from_txs("739990", &[121]));
+        assert_eq!(stats.sigs_sighashes, 2);
+        assert_eq!(stats.sigs_sighash_all_acp, 2);
+        assert_eq!(stats.sigs_sighash_all, 0);
+    }
+
+    #[test]
+    fn public_keys_are_counted_by_whether_they_are_compressed() {
+        // three compressed keys in one transaction, one uncompressed key in another
+        let stats = script_stats(&block_from_txs("361582", &[23, 25]));
+        assert_eq!(stats.pubkeys, 4);
+        assert_eq!(stats.pubkeys_compressed, 3);
+        assert_eq!(stats.pubkeys_uncompressed, 1);
+        assert_eq!(stats.pubkeys_compressed_inputs, 3);
+        assert_eq!(stats.pubkeys_uncompressed_inputs, 1);
+        assert_eq!(stats.pubkeys_compressed_outputs, 0);
+
+        // keys in an output are counted separately
+        let stats = script_stats(&block_from_txs("739990", &[619]));
+        assert_eq!(stats.pubkeys_compressed_outputs, 1);
+        assert_eq!(stats.pubkeys_compressed_inputs, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // InputStats and ScriptStats: the signatures in an input
+    //
+    // The signatures here are made up: they are DER encoded and parse, but they
+    // don't sign anything. That is enough for the stats, which only look at the
+    // shape of a signature, and it is the only way to get at the odd lengths,
+    // encodings and sighash flags that the fixture blocks don't contain.
+    // ---------------------------------------------------------------------
+
+    /// A single data push of up to 75 bytes.
+    fn push(data: &[u8]) -> Vec<u8> {
+        let mut v = vec![data.len() as u8];
+        v.extend(data);
+        v
+    }
+
+    /// A DER encoded ECDSA signature with the sighash flag appended:
+    /// `0x30 <length> 0x02 <length of r> <r> 0x02 <length of s> <s> <sighash>`.
+    fn der_signature(r: &[u8], s: &[u8], sighash: u8) -> Vec<u8> {
+        let mut v = vec![0x30, (4 + r.len() + s.len()) as u8, 0x02, r.len() as u8];
+        v.extend(r);
+        v.extend([0x02, s.len() as u8]);
+        v.extend(s);
+        v.push(sighash);
+        v
+    }
+
+    /// A positive, minimally encoded DER integer of `length` byte.
+    fn der_integer(length: usize) -> Vec<u8> {
+        let mut v = vec![0x11];
+        v.extend(vec![0x22; length - 1]);
+        v
+    }
+
+    /// A strictly DER encoded signature of 71 byte with the given sighash flag.
+    fn signature(sighash: u8) -> Vec<u8> {
+        der_signature(&der_integer(32), &der_integer(32), sighash)
+    }
+
+    /// A signature of `length` byte. Up to 73 byte it is strictly DER encoded;
+    /// anything longer is padded with the leading zero bytes that only the lax
+    /// DER parser accepts.
+    fn signature_of_length(length: usize) -> Vec<u8> {
+        let (r, s) = if length <= 73 {
+            let r_length = (length - 7) / 2;
+            (der_integer(r_length), der_integer(length - 7 - r_length))
+        } else {
+            let mut r = vec![0x00];
+            r.extend(der_integer(32));
+            let mut s = vec![0x00; length - 7 - r.len() - 32];
+            s.extend(der_integer(32));
+            (r, s)
+        };
+        let signature = der_signature(&r, &s, 0x01);
+        assert_eq!(signature.len(), length);
+        signature
+    }
+
+    /// A signature that only the lax DER parser accepts: its R value is
+    /// negative, which a strictly DER encoded signature never is.
+    fn not_strictly_der_encoded_signature() -> Vec<u8> {
+        let mut r = vec![0x80];
+        r.extend(vec![0x22; 31]);
+        der_signature(&r, &der_integer(32), 0x01)
+    }
+
+    /// A P2PK script_sig: `<signature>`.
+    fn p2pk_script_sig(signature: &[u8]) -> ScriptBuf {
+        ScriptBuf::from_bytes(push(signature))
+    }
+
+    /// A bare multisig script_sig: `OP_0 <signature>`.
+    fn p2ms_script_sig(signature: &[u8]) -> ScriptBuf {
+        let mut v = vec![0x00];
+        v.extend(push(signature));
+        ScriptBuf::from_bytes(v)
+    }
+
+    /// A block with one transaction per script_sig, each spending a single
+    /// output with that script_sig and without a witness.
+    fn block_with_script_sigs(script_sigs: &[ScriptBuf]) -> Block {
+        let mut txdata = vec![simple_coinbase(1)];
+        for (index, script_sig) in script_sigs.iter().enumerate() {
+            let mut tx = spending_tx(
+                2,
+                0,
+                &[(OutPoint::new(fake_txid(index as u8 + 1), 0), Sequence::MAX)],
+                &[(1_000, p2wpkh_script(1))],
+            );
+            tx.input[0].script_sig = script_sig.clone();
+            txdata.push(rest_tx(
+                &tx,
+                Some(Amount::from_sat(100)),
+                vec![Some(prevout(
+                    TEST_HEIGHT - 10,
+                    1_100,
+                    ScriptPubkeyType::Pubkey,
+                ))],
+            ));
+        }
+        synthetic_block(TEST_HEIGHT, txdata)
+    }
+
+    #[test]
+    fn pay_to_public_key_inputs_are_counted() {
+        let block = block_with_script_sigs(&[p2pk_script_sig(&signature(0x01))]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_p2pk, 1);
+        assert_eq!(stats.inputs_spending_legacy, 1);
+        assert_eq!(stats.inputs_p2sh, 0);
+    }
+
+    #[test]
+    fn bare_multisig_inputs_are_counted() {
+        let block = block_with_script_sigs(&[p2ms_script_sig(&signature(0x01))]);
+        let stats = input_stats(&block);
+        assert_eq!(stats.inputs_p2ms, 1);
+        assert_eq!(stats.inputs_spending_multisig, 1);
+        assert_eq!(stats.inputs_spending_p2ms_multisig, 1);
+        assert_eq!(stats.inputs_spending_p2sh_multisig, 0);
+    }
+
+    #[test]
+    fn a_signature_that_is_not_strictly_der_encoded_is_counted() {
+        let block =
+            block_with_script_sigs(&[p2pk_script_sig(&not_strictly_der_encoded_signature())]);
+        let stats = script_stats(&block);
+        assert_eq!(stats.sigs_ecdsa, 1);
+        assert_eq!(stats.sigs_ecdsa_not_strict_der, 1);
+        assert_eq!(stats.sigs_ecdsa_strict_der, 0);
+    }
+
+    #[test]
+    fn signature_lengths_outside_the_usual_range_are_counted() {
+        let block = block_with_script_sigs(&[
+            p2pk_script_sig(&signature_of_length(69)),
+            p2pk_script_sig(&signature_of_length(74)),
+            p2pk_script_sig(&signature_of_length(75)),
+        ]);
+        let stats = script_stats(&block);
+        assert_eq!(stats.sigs_ecdsa, 3);
+        assert_eq!(stats.sigs_ecdsa_length_less_70byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_74byte, 1);
+        assert_eq!(stats.sigs_ecdsa_length_75byte_or_more, 1);
+        assert_eq!(stats.sigs_ecdsa_length_70byte, 0);
+    }
+
+    #[test]
+    fn signatures_are_counted_for_each_of_the_six_sighash_flags() {
+        let block = block_with_script_sigs(&[
+            p2pk_script_sig(&signature(0x01)),
+            p2pk_script_sig(&signature(0x02)),
+            p2pk_script_sig(&signature(0x03)),
+            p2pk_script_sig(&signature(0x81)),
+            p2pk_script_sig(&signature(0x82)),
+            p2pk_script_sig(&signature(0x83)),
+        ]);
+        let stats = script_stats(&block);
+        assert_eq!(stats.sigs_sighashes, 6);
+        assert_eq!(stats.sigs_sighash_all, 1);
+        assert_eq!(stats.sigs_sighash_none, 1);
+        assert_eq!(stats.sigs_sighash_single, 1);
+        assert_eq!(stats.sigs_sighash_all_acp, 1);
+        assert_eq!(stats.sigs_sighash_none_acp, 1);
+        assert_eq!(stats.sigs_sighash_single_acp, 1);
+    }
+
+    #[test]
+    fn an_uncompressed_public_key_in_an_output_is_counted() {
+        let stats = script_stats(&block_with_outputs(1_000, &[p2pk_script(false)]));
+        // one in the coinbase and one in the transaction after it
+        assert_eq!(stats.pubkeys, 2);
+        assert_eq!(stats.pubkeys_uncompressed, 2);
+        assert_eq!(stats.pubkeys_uncompressed_outputs, 2);
+        assert_eq!(stats.pubkeys_compressed_outputs, 0);
+        assert_eq!(stats.pubkeys_uncompressed_inputs, 0);
+    }
+
+    // ---------------------------------------------------------------------
+    // Stats::from_block
+    // ---------------------------------------------------------------------
+
+    use super::StatsError;
+
+    #[test]
+    fn a_transaction_that_does_not_decode_is_an_error() {
+        let mut block = synthetic_block(TEST_HEIGHT, vec![simple_coinbase(1)]);
+        block.txdata[0].raw.truncate(10);
+        match Stats::from_block(block) {
+            Err(StatsError::BitcoinEncode(_)) => (),
+            other => panic!("expected a decode error, got {:?}", other.map(|_| ())),
+        }
+    }
+
+    #[test]
+    fn the_date_is_the_day_of_the_block_timestamp() {
+        let mut block = synthetic_block(TEST_HEIGHT, vec![simple_coinbase(1)]);
+        // 2015-06-19 06:13:20 UTC
+        block.time = 1_434_694_400;
+        let stats = Stats::from_block(block).expect("the stats to be computed");
+        assert_eq!(stats.block.date, "2015-06-19");
+        assert_eq!(stats.tx.date, "2015-06-19");
     }
 }
