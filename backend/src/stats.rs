@@ -40,6 +40,8 @@ pub enum StatsError {
     BitcoinEncode(bitcoin::consensus::encode::Error),
     ParseInt(ParseIntError),
     UnprefixedHex(UnprefixedHexError),
+    /// The stats code panicked. Carries the panic message.
+    Panic(String),
 }
 
 impl fmt::Display for StatsError {
@@ -49,6 +51,7 @@ impl fmt::Display for StatsError {
             StatsError::BitcoinEncode(e) => write!(f, "Bitcoin Encode Error: {:?}", e),
             StatsError::ParseInt(e) => write!(f, "Parse Int Error: {:?}", e),
             StatsError::UnprefixedHex(e) => write!(f, "Unprefixed Hex Error: {:?}", e),
+            StatsError::Panic(message) => write!(f, "Panic while generating stats: {}", message),
         }
     }
 }
@@ -60,6 +63,7 @@ impl error::Error for StatsError {
             StatsError::BitcoinEncode(ref e) => Some(e),
             StatsError::ParseInt(ref e) => Some(e),
             StatsError::UnprefixedHex(ref e) => Some(e),
+            StatsError::Panic(_) => None,
         }
     }
 }
